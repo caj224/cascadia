@@ -44,7 +44,7 @@ const habitatLabel = (k) => {
 /* Habitat majority bonus.
    Solo: 2 pts per habitat with a landscape of 7+.
    2p:   largest 2, tie 1 each, no second-place bonus.
-   3-4p: largest 3, unique second 1. Two-way tie for largest 2 each,
+   3p+:  largest 3, unique second 1. Two-way tie for largest 2 each,
          3+ way tie 1 each, ties for second score 0. */
 function habitatBonus(sizes) {
   const n = sizes.length;
@@ -126,10 +126,9 @@ const comboKey = (cards) => ANIMALS.map((a) => cards[a.key]).join("");
 const pairKey = (i, j, li, lj) => `${i}${j}${li}${lj}`;
 const comboLabel = (cards) => comboKey(cards).split("").join("·");
 
-function emptyPlayer(name, isYou) {
+function emptyPlayer(name) {
   return {
     name,
-    isYou: !!isYou,
     wildlife: Object.fromEntries(ANIMALS.map((a) => [a.key, ""])),
     habitat: Object.fromEntries(HABITATS.map((h) => [h.key, ""])),
     nature: "",
@@ -137,7 +136,7 @@ function emptyPlayer(name, isYou) {
 }
 
 function defaultPlayers() {
-  return [emptyPlayer("Caleb", true), emptyPlayer("Allison", false)];
+  return [emptyPlayer("Caleb"), emptyPlayer("Allison")];
 }
 
 function newDraft() {
@@ -840,9 +839,8 @@ function LogGame({ cov, draft, setDraft, onSave }) {
       const next = prev.slice(0, n);
       while (next.length < n) {
         const fallback = REGULARS[next.length] ? REGULARS[next.length].label : `Player ${next.length + 1}`;
-        next.push(emptyPlayer(fallback, false));
+        next.push(emptyPlayer(fallback));
       }
-      if (!next.some((p) => p.isYou)) next[0] = { ...next[0], isYou: true };
       return next;
     });
   };
@@ -862,7 +860,7 @@ function LogGame({ cov, draft, setDraft, onSave }) {
         habitat: { ...p.habitat },
       })),
     });
-    setPlayers((prev) => prev.map((p) => emptyPlayer(p.name, p.isYou)));
+    setPlayers((prev) => prev.map((p) => emptyPlayer(p.name)));
     setMegaC(false); // classify each game on its own, never by inheritance
     setSaved(true);
     setTimeout(() => setSaved(false), 2200);
@@ -927,7 +925,7 @@ function LogGame({ cov, draft, setDraft, onSave }) {
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             </label>
             <div className="cs-seg">
-              {[1, 2, 3, 4].map((n) => (
+              {[1, 2, 3, 4, 5].map((n) => (
                 <button
                   key={n}
                   className={"cs-segbtn" + (players.length === n ? " on" : "")}
@@ -958,15 +956,6 @@ function LogGame({ cov, draft, setDraft, onSave }) {
                 onFocus={(e) => e.target.select()}
                 onChange={(e) => patch(i, (q) => ({ ...q, name: e.target.value }))}
               />
-              <button
-                className={"cs-you" + (p.isYou ? " on" : "")}
-                onClick={() =>
-                  setPlayers((prev) => prev.map((q, idx) => ({ ...q, isYou: idx === i })))
-                }
-                title="Marks whose sheet this is — kept for older exports"
-              >
-                {p.isYou ? "Your sheet" : "Mark as yours"}
-              </button>
               <span className={"cs-total" + (leaders.includes(i) ? " lead" : "")}>
                 {scores[i].total}
               </span>
@@ -1488,8 +1477,6 @@ const CSS = `
 .cs-player { border-top: 1px solid var(--line); padding: 14px 0 4px; }
 .cs-player-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .cs-name { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 15px; border: none; border-bottom: 1px solid var(--line); background: none; padding: 2px 0; width: 130px; color: var(--ink); }
-.cs-you { font-size: 11px; border: 1px solid var(--line); background: none; border-radius: 20px; padding: 3px 10px; color: var(--ink-2); cursor: pointer; font-family: inherit; }
-.cs-you.on { background: #35604A; border-color: #35604A; color: #fff; }
 .cs-total { margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 24px; font-weight: 600; color: var(--ink-2); }
 .cs-total.lead { color: #35604A; }
 
