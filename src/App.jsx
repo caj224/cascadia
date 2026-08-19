@@ -26,6 +26,18 @@ const TOTAL_COMBOS = Math.pow(CARDS.length, ANIMALS.length); // 16807
 const TOTAL_PAIRS = 10 * CARDS.length * CARDS.length; // 490
 const STORE_KEY = "cascadia:v1";
 
+/* The two regulars. Everything head-to-head keys off these names,
+   matched case-insensitively so "caleb" and "Caleb" are one person. */
+const REGULARS = [
+  { key: "caleb", label: "Caleb", color: "#35604A" },
+  { key: "allison", label: "Allison", color: "#B4453A" },
+];
+
+const nameKey = (n) => String(n || "").trim().toLowerCase();
+const regularFor = (n) => REGULARS.find((r) => r.key === nameKey(n)) || null;
+/* A regular always shows under their canonical spelling, however it was typed. */
+const displayName = (n) => (regularFor(n) ? regularFor(n).label : n);
+
 /* Habitat majority bonus.
    Solo: 2 pts per habitat with a corridor of 7+.
    2p:   largest 2, tie 1 each, no second-place bonus.
@@ -65,6 +77,8 @@ function scoreGame(players) {
       corridor,
       bonus,
       nature,
+      // "Landscape" in the stats: corridors plus the majority bonuses they earn.
+      landscape: corridor + bonus,
       bonusByHabitat: HABITATS.reduce(
         (o, h) => ((o[h.key] = bonuses[h.key][i]), o),
         {}
@@ -81,6 +95,7 @@ const num = (v) => {
 
 const comboKey = (cards) => ANIMALS.map((a) => cards[a.key]).join("");
 const pairKey = (i, j, li, lj) => `${i}${j}${li}${lj}`;
+const comboLabel = (cards) => comboKey(cards).split("").join("·");
 
 function emptyPlayer(name, isYou) {
   return {
@@ -89,6 +104,18 @@ function emptyPlayer(name, isYou) {
     wildlife: Object.fromEntries(ANIMALS.map((a) => [a.key, ""])),
     habitat: Object.fromEntries(HABITATS.map((h) => [h.key, ""])),
     nature: "",
+  };
+}
+
+function defaultPlayers() {
+  return [emptyPlayer("Caleb", true), emptyPlayer("Allison", false)];
+}
+
+function newDraft() {
+  return {
+    date: new Date().toISOString().slice(0, 10),
+    cards: Object.fromEntries(ANIMALS.map((a) => [a.key, "A"])),
+    players: defaultPlayers(),
   };
 }
 
@@ -170,6 +197,165 @@ function randomCombo(played) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Stats                                                               */
+/* ------------------------------------------------------------------ */
+
+/* One row per player per game — the shape every stat below reads from.
+   Games stay in storage order (newest first), so streaks read top-down. */
+function buildRows(games) {
+  const rows = [];
+  games.forEach((g) => {
+    if (!g.players || !g.players.length) return;
+    const s = scoreGame(g.players);
+    const totals = s.map((x) => x.total);
+    const best = Math.max(...totals);
+    g.players.forEach((p, i) => {
+      rows.push({
+        gameId: g.id,
+        date: g.date,
+        cards: g.cards,
+        name: p.name,
+        key: nameKey(p.name),
+        players: g.players.length,
+        won: s[i].total === best,
+        margin: s[i].total - (totals.length > 1 ? Math.max(...sansOne(totals, i)) : 0),
+        animals: Object.fromEntries(ANIMALS.map((a) => [a.key, num(p.wildlife[a.key])])),
+        corridors: Object.fromEntries(HABITATS.map((h) => [h.key, num(p.habitat[h.key])])),
+        ...s[i],
+      });
+    });
+  });
+  return rows;
+}
+
+const sansOne = (arr, i) => arr.filter((_, idx) => idx !== i);
+
+/* Best row for a metric. Rows arrive newest-first, so a strict > keeps the
+   most recent holder of a tied record. */
+function recordFor(rows, get) {
+  let best = null;
+  rows.forEach((r) => {
+    const v = get(r);
+    if (best === null || v > best.value) best = { value: v, row: r };
+  });
+  return best;
+}
+
+function buildStats(games) {
+  const rows = buildRows(games);
+
+  const records = {
+    total: recordFor(rows, (r) => r.total),
+    wildlife: recordFor(rows, (r) => r.wildlife),
+    landscape: recordFor(rows, (r) => r.landscape),
+    corridor: recordFor(rows, (r) => r.corridor),
+    nature: recordFor(rows, (r) => r.nature),
+    margin: recordFor(
+      rows.filter((r) => r.players > 1 && r.won),
+      (r) => r.margin
+    ),
+    animals: Object.fromEntries(
+      ANIMALS.map((a) => [a.key, recordFor(rows, (r) => r.animals[a.key])])
+    ),
+    habitats: Object.fromEntries(
+      HABITATS.map((h) => [h.key, recordFor(rows, (r) => r.corridors[h.key])])
+    ),
+  };
+
+  /* Head to head: only games where both regulars sat down. */
+  const h2h = {
+    games: 0,
+    wins: Object.fromEntries(REGULARS.map((r) => [r.key, 0])),
+    ties: 0,
+    points: Object.fromEntries(REGULARS.map((r) => [r.key, 0])),
+    best: Object.fromEntries(REGULARS.map((r) => [r.key, 0])),
+    streak: { key: null, n: 0 },
+  };
+  const byGame = new Map();
+  rows.forEach((r) => {
+    if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
+    byGame.get(r.gameId).push(r);
+  });
+  const h2hGames = [];
+  byGame.forEach((rs, id) => {
+    const seats = REGULARS.map((reg) => rs.find((r) => r.key === reg.key));
+    if (seats.some((s) => !s)) return;
+    h2hGames.push({ id, seats, date: seats[0].date });
+  });
+  // byGame preserves rows order, which is games order: newest first.
+  h2hGames.forEach(({ seats }) => {
+    h2h.games++;
+    const top = Math.max(...seats.map((s) => s.total));
+    const leaders = seats.filter((s) => s.total === top);
+    if (leaders.length > 1) h2h.ties++;
+    else h2h.wins[leaders[0].key]++;
+    seats.forEach((s) => {
+      h2h.points[s.key] += s.total;
+      if (s.total > h2h.best[s.key]) h2h.best[s.key] = s.total;
+    });
+  });
+  for (const { seats } of h2hGames) {
+    const top = Math.max(...seats.map((s) => s.total));
+    const leaders = seats.filter((s) => s.total === top);
+    if (leaders.length > 1) break;
+    if (h2h.streak.key === null) h2h.streak.key = leaders[0].key;
+    else if (h2h.streak.key !== leaders[0].key) break;
+    h2h.streak.n++;
+  }
+  h2h.avg = Object.fromEntries(
+    REGULARS.map((r) => [r.key, h2h.games ? h2h.points[r.key] / h2h.games : 0])
+  );
+
+  /* Per-player season line, including guests. */
+  const people = new Map();
+  rows.forEach((r) => {
+    if (!people.has(r.key))
+      people.set(r.key, { key: r.key, name: r.name, games: 0, wins: 0, sum: 0, best: 0 });
+    const p = people.get(r.key);
+    p.games++;
+    if (r.won) p.wins++;
+    p.sum += r.total;
+    if (r.total > p.best) p.best = r.total;
+  });
+
+  return {
+    rows,
+    records,
+    h2h,
+    people: [...people.values()].sort((a, b) => b.games - a.games),
+  };
+}
+
+/* Mean wildlife points scored on each scoring card, optionally for one
+   player. `min` guards against a single lucky game defining "best". */
+function cardMeans(rows, playerKey) {
+  const acc = Object.fromEntries(
+    ANIMALS.map((a) => [a.key, Object.fromEntries(CARDS.map((c) => [c, { n: 0, sum: 0 }]))])
+  );
+  rows.forEach((r) => {
+    if (playerKey && r.key !== playerKey) return;
+    ANIMALS.forEach((a) => {
+      const cell = acc[a.key][r.cards[a.key]];
+      if (!cell) return;
+      cell.n++;
+      cell.sum += r.animals[a.key];
+    });
+  });
+  const bestCard = {};
+  ANIMALS.forEach((a) => {
+    let win = null;
+    CARDS.forEach((c) => {
+      const cell = acc[a.key][c];
+      if (!cell.n) return;
+      const mean = cell.sum / cell.n;
+      if (!win || mean > win.mean) win = { card: c, mean, n: cell.n };
+    });
+    bestCard[a.key] = win;
+  });
+  return { acc, bestCard };
+}
+
+/* ------------------------------------------------------------------ */
 /* Hex primitives                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -198,11 +384,21 @@ function tint(count) {
 /* App                                                                 */
 /* ------------------------------------------------------------------ */
 
+const TABS = [
+  ["home", "Home"],
+  ["add", "Add game"],
+  ["stats", "Stats"],
+  ["log", "Log"],
+];
+
 export default function CascadiaTracker() {
   const [ready, setReady] = useState(false);
   const [storageOk, setStorageOk] = useState(true);
   const [games, setGames] = useState([]);
-  const [tab, setTab] = useState("log");
+  const [tab, setTab] = useState("home");
+  // The scorecard in progress lives here, not in LogGame, so switching
+  // tabs mid-game doesn't throw away what you have typed.
+  const [draft, setDraft] = useState(newDraft);
   const fileRef = useRef(null);
 
   useEffect(() => {
@@ -235,6 +431,12 @@ export default function CascadiaTracker() {
   };
 
   const cov = useMemo(() => buildCoverage(games), [games]);
+  const stats = useMemo(() => buildStats(games), [games]);
+
+  const playCombo = (cards) => {
+    setDraft((d) => ({ ...d, cards: { ...cards } }));
+    setTab("add");
+  };
 
   const exportJson = () => {
     const blob = new Blob([JSON.stringify({ games }, null, 2)], {
@@ -283,18 +485,14 @@ export default function CascadiaTracker() {
         <div>
           <h1>Cascadia log</h1>
           <p className="cs-sub">
-            {cov.played.size.toLocaleString()} of {TOTAL_COMBOS.toLocaleString()} card
-            combinations seen · {games.length} game{games.length === 1 ? "" : "s"} recorded
+            {games.length} game{games.length === 1 ? "" : "s"} recorded ·{" "}
+            {REGULARS.map((r) => r.label).join(" & ")}
           </p>
         </div>
       </header>
 
       <nav className="cs-tabs">
-        {[
-          ["log", "Record a game"],
-          ["games", "Games"],
-          ["coverage", "Coverage"],
-        ].map(([k, label]) => (
+        {TABS.map(([k, label]) => (
           <button
             key={k}
             className={"cs-tab" + (tab === k ? " on" : "")}
@@ -314,16 +512,23 @@ export default function CascadiaTracker() {
 
       {!ready ? (
         <p className="cs-empty">Loading your log…</p>
-      ) : tab === "log" ? (
-        <LogGame cov={cov} onSave={(g) => persist([g, ...games])} />
-      ) : tab === "games" ? (
+      ) : tab === "home" ? (
+        <Home games={games} cov={cov} stats={stats} onPlay={playCombo} onGo={setTab} />
+      ) : tab === "add" ? (
+        <LogGame
+          cov={cov}
+          draft={draft}
+          setDraft={setDraft}
+          onSave={(g) => persist([g, ...games])}
+        />
+      ) : tab === "stats" ? (
+        <Stats games={games} cov={cov} stats={stats} />
+      ) : (
         <GamesList
           games={games}
           cov={cov}
           onDelete={(id) => persist(games.filter((g) => g.id !== id))}
         />
-      ) : (
-        <Coverage games={games} cov={cov} />
       )}
 
       <footer className="cs-foot">
@@ -346,19 +551,213 @@ export default function CascadiaTracker() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Record a game                                                       */
+/* Home                                                                */
 /* ------------------------------------------------------------------ */
 
-function LogGame({ cov, onSave }) {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [cards, setCards] = useState(() =>
-    Object.fromEntries(ANIMALS.map((a) => [a.key, "A"]))
+function Home({ games, cov, stats, onPlay, onGo }) {
+  const [pick, setPick] = useState(() => suggestCombo(cov));
+  // Re-roll whenever the log changes so the suggestion is never one you played.
+  useEffect(() => setPick(suggestCombo(cov)), [cov]);
+
+  const pct = (cov.played.size / TOTAL_COMBOS) * 100;
+  const { h2h } = stats;
+  const streaker = REGULARS.find((r) => r.key === h2h.streak.key);
+  const means = useMemo(() => cardMeans(stats.rows, null), [stats.rows]);
+
+  const freshPairs = useMemo(() => {
+    let n = 0;
+    for (let i = 0; i < ANIMALS.length; i++)
+      for (let j = i + 1; j < ANIMALS.length; j++)
+        if (!cov.pairs.has(pairKey(i, j, pick[ANIMALS[i].key], pick[ANIMALS[j].key]))) n++;
+    return n;
+  }, [pick, cov]);
+
+  return (
+    <div>
+      <section className="cs-panel cs-hero">
+        <p className="cs-hero-label">Combos played</p>
+        <p className="cs-hero-value mono">
+          {cov.played.size.toLocaleString()}
+          <span>/{TOTAL_COMBOS.toLocaleString()}</span>
+        </p>
+        <div className="cs-progress">
+          <div
+            className="cs-progress-fill"
+            style={{ width: `${Math.max(pct, cov.played.size ? 0.6 : 0)}%` }}
+          />
+        </div>
+        <p className="cs-hero-sub mono">
+          {pct.toFixed(3)}% of every wildlife scoring-card combination ·{" "}
+          {cov.pairs.size}/{TOTAL_PAIRS} pairings seen
+        </p>
+      </section>
+
+      <section className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Try this next</h2>
+          <div className="cs-actions">
+            <button className="cs-ghost sm" onClick={() => setPick(suggestCombo(cov))}>
+              Another
+            </button>
+            <button className="cs-ghost sm" onClick={() => setPick(randomCombo(cov.played))}>
+              Surprise me
+            </button>
+          </div>
+        </div>
+        <div className="cs-suggest">
+          <div className="cs-suggest-cards">
+            {ANIMALS.map((a) => (
+              <div className="cs-suggest-card" key={a.key}>
+                <span className="cs-suggest-letter mono" style={{ background: a.color }}>
+                  {pick[a.key]}
+                </span>
+                <span className="cs-suggest-animal" style={{ color: a.color }}>
+                  {a.label}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="cs-suggest-side">
+            <p className="cs-legend">
+              Never played. {freshPairs > 0
+                ? `${freshPairs} of its 10 card pairings are new too.`
+                : "Every pairing in it has shown up before, but not all five at once."}
+            </p>
+            <button className="cs-save sm" onClick={() => onPlay(pick)}>
+              Score this game
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Head to head</h2>
+          <p className="cs-legend">
+            {h2h.games
+              ? `${h2h.games} game${h2h.games === 1 ? "" : "s"} with both of you at the table.`
+              : "No games yet with both of you at the table."}
+          </p>
+        </div>
+        <div className="cs-h2h">
+          {REGULARS.map((r, i) => (
+            <React.Fragment key={r.key}>
+              {i === 1 && (
+                <div className="cs-h2h-mid">
+                  <span className="mono cs-h2h-score">
+                    {h2h.wins[REGULARS[0].key]}–{h2h.wins[REGULARS[1].key]}
+                    {h2h.ties ? `–${h2h.ties}` : ""}
+                  </span>
+                  <span className="cs-h2h-note">
+                    {h2h.ties ? "W–L–T" : "wins"}
+                    {streaker && h2h.streak.n > 1
+                      ? ` · ${streaker.label} on ${h2h.streak.n}`
+                      : ""}
+                  </span>
+                </div>
+              )}
+              <div className="cs-h2h-side">
+                <span className="cs-h2h-name" style={{ color: r.color }}>
+                  {r.label}
+                </span>
+                <span className="mono cs-h2h-w">{h2h.wins[r.key]}</span>
+                <span className="cs-h2h-meta mono">
+                  avg {h2h.games ? h2h.avg[r.key].toFixed(1) : "–"} · best{" "}
+                  {h2h.best[r.key] || "–"}
+                </span>
+              </div>
+            </React.Fragment>
+          ))}
+        </div>
+      </section>
+
+      <section className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Records</h2>
+          <button className="cs-ghost sm" onClick={() => onGo("stats")}>
+            All stats
+          </button>
+        </div>
+        <div className="cs-rec-grid">
+          <Record label="Highest score" rec={stats.records.total} />
+          <Record label="Highest wildlife" rec={stats.records.wildlife} />
+          <Record label="Highest landscape" rec={stats.records.landscape} />
+          <Record label="Most nature tokens" rec={stats.records.nature} />
+          <Record label="Longest corridors" rec={stats.records.corridor} />
+          <Record label="Biggest blowout" rec={stats.records.margin} prefix="+" />
+        </div>
+      </section>
+
+      <section className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Best card per animal</h2>
+          <p className="cs-legend">Highest average wildlife score, all players.</p>
+        </div>
+        <div className="cs-bestcards">
+          {ANIMALS.map((a) => {
+            const b = means.bestCard[a.key];
+            return (
+              <div className="cs-bestcard" key={a.key}>
+                <span className="cs-bestcard-letter mono" style={{ background: b ? a.color : "#C3CBC2" }}>
+                  {b ? b.card : "–"}
+                </span>
+                <span className="cs-bestcard-animal" style={{ color: a.color }}>
+                  {a.label}
+                </span>
+                <span className="cs-bestcard-mean mono">
+                  {b ? `${b.mean.toFixed(1)} avg` : "no data"}
+                  {b ? <em className="cs-n">{b.n}</em> : null}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {!games.length && (
+        <p className="cs-empty">
+          Nothing recorded yet — <strong>Add game</strong> fills all of this in.
+        </p>
+      )}
+    </div>
   );
-  const [players, setPlayers] = useState(() => [
-    emptyPlayer("You", true),
-    emptyPlayer("Player 2", false),
-  ]);
+}
+
+function Record({ label, rec, prefix = "", color }) {
+  return (
+    <div className="cs-rec">
+      <span className="cs-stat-label" style={color ? { color } : undefined}>
+        {label}
+      </span>
+      <span className="cs-rec-value mono">
+        {rec ? `${prefix}${rec.value}` : "–"}
+      </span>
+      {rec ? (
+        <span className="cs-rec-who">
+          <strong style={regularFor(rec.row.name) ? { color: regularFor(rec.row.name).color } : undefined}>
+            {displayName(rec.row.name)}
+          </strong>
+          <span className="mono"> · {rec.row.date} · {comboLabel(rec.row.cards)}</span>
+        </span>
+      ) : (
+        <span className="cs-rec-who">no games yet</span>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Add game                                                            */
+/* ------------------------------------------------------------------ */
+
+function LogGame({ cov, draft, setDraft, onSave }) {
+  const { date, cards, players } = draft;
   const [saved, setSaved] = useState(false);
+
+  const setDate = (v) => setDraft((d) => ({ ...d, date: v }));
+  const setCards = (v) => setDraft((d) => ({ ...d, cards: v }));
+  const setPlayers = (fn) =>
+    setDraft((d) => ({ ...d, players: typeof fn === "function" ? fn(d.players) : fn }));
 
   const key = comboKey(cards);
   const timesPlayed = cov.comboCount.get(key) || 0;
@@ -381,8 +780,10 @@ function LogGame({ cov, onSave }) {
   const setCount = (n) => {
     setPlayers((prev) => {
       const next = prev.slice(0, n);
-      while (next.length < n)
-        next.push(emptyPlayer(`Player ${next.length + 1}`, false));
+      while (next.length < n) {
+        const fallback = REGULARS[next.length] ? REGULARS[next.length].label : `Player ${next.length + 1}`;
+        next.push(emptyPlayer(fallback, false));
+      }
       if (!next.some((p) => p.isYou)) next[0] = { ...next[0], isYou: true };
       return next;
     });
@@ -402,7 +803,7 @@ function LogGame({ cov, onSave }) {
         habitat: { ...p.habitat },
       })),
     });
-    setPlayers(players.map((p) => emptyPlayer(p.name, p.isYou)));
+    setPlayers((prev) => prev.map((p) => emptyPlayer(p.name, p.isYou)));
     setSaved(true);
     setTimeout(() => setSaved(false), 2200);
   };
@@ -450,7 +851,7 @@ function LogGame({ cov, onSave }) {
         </div>
 
         <p className={"cs-status" + (timesPlayed ? " repeat" : "")}>
-          <strong className="mono">{key.split("").join("·")}</strong>
+          <strong className="mono">{comboLabel(cards)}</strong>
           {timesPlayed === 0
             ? " is new to you."
             : ` has come up ${timesPlayed} time${timesPlayed === 1 ? "" : "s"} before.`}{" "}
@@ -495,7 +896,7 @@ function LogGame({ cov, onSave }) {
                 onClick={() =>
                   setPlayers((prev) => prev.map((q, idx) => ({ ...q, isYou: idx === i })))
                 }
-                title="Mark which sheet is yours — coverage stats use it"
+                title="Marks whose sheet this is — kept for older exports"
               >
                 {p.isYou ? "Your sheet" : "Mark as yours"}
               </button>
@@ -578,7 +979,7 @@ function Field({ label, value, onChange, color, hint }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Games list                                                          */
+/* Log                                                                 */
 /* ------------------------------------------------------------------ */
 
 function GamesList({ games, cov, onDelete }) {
@@ -586,8 +987,8 @@ function GamesList({ games, cov, onDelete }) {
   if (!games.length)
     return (
       <p className="cs-empty">
-        Nothing recorded yet. Head to <strong>Record a game</strong> and log your last
-        session — the coverage map fills in from there.
+        Nothing recorded yet. Head to <strong>Add game</strong> and log your last
+        session — every stat fills in from there.
       </p>
     );
 
@@ -598,6 +999,7 @@ function GamesList({ games, cov, onDelete }) {
         const best = Math.max(...s.map((x) => x.total));
         const winner = g.players[s.findIndex((x) => x.total === best)];
         const first = cov.comboCount.get(comboKey(g.cards)) === 1;
+        const reg = regularFor(winner.name);
         return (
           <div className="cs-game" key={g.id}>
             <button className="cs-game-head" onClick={() => setOpen(open === g.id ? null : g.id)}>
@@ -610,8 +1012,8 @@ function GamesList({ games, cov, onDelete }) {
                 ))}
               </span>
               {first && <span className="cs-first">first time</span>}
-              <span className="cs-winner">
-                {winner.name} {best}
+              <span className="cs-winner" style={reg ? { color: reg.color } : undefined}>
+                {displayName(winner.name)} {best}
               </span>
             </button>
 
@@ -666,39 +1068,167 @@ function GamesList({ games, cov, onDelete }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Coverage                                                            */
+/* Stats                                                               */
 /* ------------------------------------------------------------------ */
 
-function Coverage({ games, cov }) {
-  const seenPairs = cov.pairs.size;
+function Stats({ games, cov, stats }) {
+  const [who, setWho] = useState("all"); // "all" | a regular's key
+  const rows = stats.rows;
+  const means = useMemo(
+    () => cardMeans(rows, who === "all" ? null : who),
+    [rows, who]
+  );
   const pct = (cov.played.size / TOTAL_COMBOS) * 100;
-
-  const yourMeans = useMemo(() => {
-    const acc = Object.fromEntries(
-      ANIMALS.map((a) => [
-        a.key,
-        Object.fromEntries(CARDS.map((c) => [c, { n: 0, sum: 0 }])),
-      ])
-    );
-    games.forEach((g) => {
-      const you = g.players.find((p) => p.isYou);
-      if (!you) return;
-      ANIMALS.forEach((a) => {
-        const cell = acc[a.key][g.cards[a.key]];
-        if (!cell) return;
-        cell.n++;
-        cell.sum += num(you.wildlife[a.key]);
-      });
-    });
-    return acc;
-  }, [games]);
 
   return (
     <div>
       <div className="cs-panel cs-stats">
-        <Stat label="Combinations seen" value={cov.played.size.toLocaleString()} sub={`of ${TOTAL_COMBOS.toLocaleString()} · ${pct.toFixed(3)}%`} />
-        <Stat label="Card pairings seen" value={`${seenPairs}`} sub={`of ${TOTAL_PAIRS}`} />
-        <Stat label="Games recorded" value={`${games.length}`} sub={games.length ? `${(cov.played.size / games.length * 100).toFixed(0)}% were new` : "—"} />
+        <Stat
+          label="Combos played"
+          value={cov.played.size.toLocaleString()}
+          sub={`of ${TOTAL_COMBOS.toLocaleString()} · ${pct.toFixed(3)}%`}
+        />
+        <Stat label="Card pairings" value={`${cov.pairs.size}`} sub={`of ${TOTAL_PAIRS}`} />
+        <Stat
+          label="Games recorded"
+          value={`${games.length}`}
+          sub={games.length ? `${cov.played.size} were a first` : "—"}
+        />
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Players</h2>
+          <p className="cs-legend">Every seat that has been logged, best first.</p>
+        </div>
+        {stats.people.length ? (
+          <table className="cs-table mono cs-people">
+            <thead>
+              <tr>
+                <th className="cs-td-name">Player</th>
+                <th>Games</th>
+                <th>Wins</th>
+                <th>Win %</th>
+                <th>Avg</th>
+                <th>Best</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.people.map((p) => {
+                const reg = REGULARS.find((r) => r.key === p.key);
+                return (
+                  <tr key={p.key}>
+                    <td className="cs-td-name" style={reg ? { color: reg.color } : undefined}>
+                      {displayName(p.name)}
+                    </td>
+                    <td>{p.games}</td>
+                    <td>{p.wins}</td>
+                    <td>{((p.wins / p.games) * 100).toFixed(0)}%</td>
+                    <td>{(p.sum / p.games).toFixed(1)}</td>
+                    <td className="cs-td-total">{p.best}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <p className="cs-legend">No games recorded yet.</p>
+        )}
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Records</h2>
+          <p className="cs-legend">Single-game highs, and who set them.</p>
+        </div>
+        <div className="cs-rec-grid">
+          <Record label="Highest score" rec={stats.records.total} />
+          <Record label="Highest wildlife" rec={stats.records.wildlife} />
+          <Record label="Highest landscape" rec={stats.records.landscape} />
+          <Record label="Longest corridors" rec={stats.records.corridor} />
+          <Record label="Most nature tokens" rec={stats.records.nature} />
+          <Record label="Biggest blowout" rec={stats.records.margin} prefix="+" />
+        </div>
+
+        <h3 className="cs-subhead">Best single animal</h3>
+        <div className="cs-rec-grid tight">
+          {ANIMALS.map((a) => (
+            <Record key={a.key} label={a.label} rec={stats.records.animals[a.key]} color={a.color} />
+          ))}
+        </div>
+
+        <h3 className="cs-subhead">Longest single corridor</h3>
+        <div className="cs-rec-grid tight">
+          {HABITATS.map((h) => (
+            <Record key={h.key} label={h.label} rec={stats.records.habitats[h.key]} color={h.color} />
+          ))}
+        </div>
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Average score per card</h2>
+          <div className="cs-actions">
+            <div className="cs-seg">
+              {[["all", "Both"], ...REGULARS.map((r) => [r.key, r.label])].map(([k, label]) => (
+                <button
+                  key={k}
+                  className={"cs-segbtn" + (who === k ? " on" : "")}
+                  onClick={() => setWho(k)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <p className="cs-legend cs-legend-wide">
+          Mean wildlife points scored while each card was in play. The green cell is the
+          best card for that animal; the small number is how many games it is based on.
+        </p>
+        <div className="cs-meantable-wrap">
+          <table className="cs-table mono cs-meantable">
+            <thead>
+              <tr>
+                <th />
+                {CARDS.map((c) => (
+                  <th key={c}>{c}</th>
+                ))}
+                <th>Best</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ANIMALS.map((a) => {
+                const best = means.bestCard[a.key];
+                return (
+                  <tr key={a.key}>
+                    <td className="cs-td-name" style={{ color: a.color }}>
+                      {a.label}
+                    </td>
+                    {CARDS.map((c) => {
+                      const cell = means.acc[a.key][c];
+                      const isBest = best && best.card === c && cell.n > 0;
+                      return (
+                        <td
+                          key={c}
+                          className={
+                            (cell.n ? "" : "cs-td-none") + (isBest ? " cs-td-best" : "")
+                          }
+                        >
+                          {cell.n ? (cell.sum / cell.n).toFixed(1) : "–"}
+                          {cell.n > 0 && <em className="cs-n">{cell.n}</em>}
+                        </td>
+                      );
+                    })}
+                    <td className="cs-td-total" style={{ color: a.color }}>
+                      {best ? best.card : "–"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="cs-panel">
@@ -748,46 +1278,6 @@ function Coverage({ games, cov }) {
               </div>
             );
           })}
-        </div>
-      </div>
-
-      <div className="cs-panel">
-        <div className="cs-panel-head">
-          <h2>Your average by card</h2>
-          <p className="cs-legend">
-            Mean wildlife points you scored on each card, across the games you marked as
-            yours.
-          </p>
-        </div>
-        <div className="cs-meantable-wrap">
-          <table className="cs-table mono cs-meantable">
-            <thead>
-              <tr>
-                <th />
-                {CARDS.map((c) => (
-                  <th key={c}>{c}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {ANIMALS.map((a) => (
-                <tr key={a.key}>
-                  <td className="cs-td-name" style={{ color: a.color }}>
-                    {a.label}
-                  </td>
-                  {CARDS.map((c) => {
-                    const cell = yourMeans[a.key][c];
-                    return (
-                      <td key={c} className={cell.n ? "" : "cs-td-none"}>
-                        {cell.n ? (cell.sum / cell.n).toFixed(1) : "–"}
-                        {cell.n > 0 && <em className="cs-n">{cell.n}</em>}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       </div>
     </div>
@@ -900,7 +1390,9 @@ const CSS = `
 .cs-panel { max-width: 940px; margin: 0 auto 14px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
 .cs-panel-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
 .cs-panel-head h2 { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-size: 15px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+.cs-subhead { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-2); margin: 20px 0 10px; }
 .cs-legend { font-size: 12px; color: var(--ink-2); margin: 0; max-width: 420px; }
+.cs-legend-wide { max-width: none; margin: -4px 0 12px; }
 .cs-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 .cs-ghost { font-family: inherit; font-size: 13px; background: none; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; color: var(--ink); cursor: pointer; }
@@ -908,6 +1400,47 @@ const CSS = `
 .cs-ghost.sm { font-size: 12px; padding: 4px 9px; }
 .cs-ghost.danger { color: #B4453A; border-color: #E3C8C4; margin-top: 8px; }
 
+/* Home ------------------------------------------------------------- */
+.cs-hero { text-align: center; padding: 22px 16px 18px; }
+.cs-hero-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink-2); font-weight: 600; margin: 0 0 6px; }
+.cs-hero-value { font-size: 46px; font-weight: 600; letter-spacing: -0.03em; margin: 0; line-height: 1; }
+.cs-hero-value span { font-size: 22px; color: var(--ink-2); letter-spacing: -0.01em; }
+.cs-progress { height: 6px; background: #E1E6DE; border-radius: 4px; margin: 14px auto 8px; max-width: 520px; overflow: hidden; }
+.cs-progress-fill { height: 100%; background: linear-gradient(90deg, #35604A, #7C8A47); border-radius: 4px; }
+.cs-hero-sub { font-size: 11px; color: var(--ink-2); margin: 0; }
+
+.cs-suggest { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.cs-suggest-cards { display: flex; gap: 8px; flex-wrap: wrap; }
+.cs-suggest-card { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.cs-suggest-letter { width: 46px; height: 56px; border-radius: 8px; color: #fff; font-size: 22px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.cs-suggest-animal { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-size: 11px; font-weight: 700; }
+.cs-suggest-side { flex: 1 1 220px; display: flex; flex-direction: column; gap: 10px; }
+.cs-save.sm { width: auto; margin-top: 0; padding: 9px 16px; align-self: flex-start; font-size: 13px; }
+
+.cs-h2h { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.cs-h2h-side { flex: 1 1 130px; display: flex; flex-direction: column; gap: 2px; }
+.cs-h2h-side:last-child { text-align: right; align-items: flex-end; }
+.cs-h2h-name { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 800; font-size: 17px; }
+.cs-h2h-w { font-size: 34px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
+.cs-h2h-meta { font-size: 11px; color: var(--ink-2); }
+.cs-h2h-mid { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 0 6px; }
+.cs-h2h-score { font-size: 18px; font-weight: 600; color: var(--ink-2); }
+.cs-h2h-note { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); }
+
+.cs-rec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+.cs-rec-grid.tight { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.cs-rec { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); padding-left: 10px; }
+.cs-rec-value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+.cs-rec-who { font-size: 11px; color: var(--ink-2); }
+.cs-rec-who strong { font-weight: 600; color: var(--ink); }
+
+.cs-bestcards { display: flex; gap: 14px; flex-wrap: wrap; }
+.cs-bestcard { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 74px; }
+.cs-bestcard-letter { width: 38px; height: 46px; border-radius: 7px; color: #fff; font-size: 19px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.cs-bestcard-animal { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-size: 11px; font-weight: 700; }
+.cs-bestcard-mean { font-size: 10px; color: var(--ink-2); }
+
+/* Add game ---------------------------------------------------------- */
 .cs-picker-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
 .cs-animal { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 13px; width: 62px; flex: none; }
 .cs-letters { display: flex; gap: 5px; flex-wrap: wrap; }
@@ -947,6 +1480,7 @@ const CSS = `
 .cs-save { width: 100%; margin-top: 14px; font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 14px; background: var(--ink); color: #fff; border: none; border-radius: 8px; padding: 12px; cursor: pointer; }
 .cs-save:hover { background: #35604A; }
 
+/* Log --------------------------------------------------------------- */
 .cs-game { border-bottom: 1px solid var(--line); }
 .cs-game:last-child { border-bottom: none; }
 .cs-game-head { width: 100%; display: flex; align-items: center; gap: 10px; background: none; border: none; padding: 10px 2px; cursor: pointer; text-align: left; font-family: inherit; color: var(--ink); flex-wrap: wrap; }
@@ -963,8 +1497,11 @@ const CSS = `
 .cs-td-name { text-align: left !important; font-weight: 600; }
 .cs-td-total { font-weight: 600; font-size: 14px; }
 .cs-td-none { color: #C3CBC2; }
+.cs-td-best { background: #E7F0E7; color: #24503A; font-weight: 600; border-radius: 4px; }
 .cs-n { font-style: normal; font-size: 8px; color: var(--ink-2); margin-left: 3px; vertical-align: super; }
+.cs-people { max-width: 520px; }
 
+/* Stats ------------------------------------------------------------- */
 .cs-stats { display: flex; gap: 26px; flex-wrap: wrap; }
 .cs-stat { display: flex; flex-direction: column; gap: 2px; }
 .cs-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); font-weight: 600; }
@@ -996,6 +1533,9 @@ const CSS = `
   .cs-animal { width: auto; }
   .cs-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
   .cs-usage-row { flex-direction: column; align-items: flex-start; }
+  .cs-hero-value { font-size: 38px; }
+  .cs-h2h-side { flex-basis: 100px; }
+  .cs-suggest-letter { width: 40px; height: 50px; font-size: 19px; }
 }
 @media (prefers-reduced-motion: reduce) { .cs-root * { transition: none !important; animation: none !important; } }
 `;
