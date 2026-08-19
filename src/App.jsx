@@ -14,16 +14,15 @@ const ANIMALS = [
 ];
 
 const HABITATS = [
-  { key: "mountain", label: "Mountain", color: "#6E7C8A" },
-  { key: "forest", label: "Forest", color: "#35604A" },
+  { key: "mountain", label: "Mountains", color: "#6E7C8A" },
+  { key: "forest", label: "Peas", color: "#35604A" },
   { key: "prairie", label: "Prairie", color: "#C0A040" },
-  { key: "wetland", label: "Wetland", color: "#7C8A47" },
+  { key: "wetland", label: "Moss", color: "#7C8A47" },
   { key: "river", label: "River", color: "#4E7FA8" },
 ];
 
 const CARDS = ["A", "B", "C", "D", "E", "F", "G"];
 const TOTAL_COMBOS = Math.pow(CARDS.length, ANIMALS.length); // 16807
-const TOTAL_PAIRS = 10 * CARDS.length * CARDS.length; // 490
 const STORE_KEY = "cascadia:v1";
 
 /* The two regulars. Everything head-to-head keys off these names,
@@ -37,9 +36,13 @@ const nameKey = (n) => String(n || "").trim().toLowerCase();
 const regularFor = (n) => REGULARS.find((r) => r.key === nameKey(n)) || null;
 /* A regular always shows under their canonical spelling, however it was typed. */
 const displayName = (n) => (regularFor(n) ? regularFor(n).label : n);
+const habitatLabel = (k) => {
+  const h = HABITATS.find((x) => x.key === k);
+  return h ? h.label.toLowerCase() : "";
+};
 
 /* Habitat majority bonus.
-   Solo: 2 pts per habitat with a corridor of 7+.
+   Solo: 2 pts per habitat with a landscape of 7+.
    2p:   largest 2, tie 1 each, no second-place bonus.
    3-4p: largest 3, unique second 1. Two-way tie for largest 2 each,
          3+ way tie 1 each, ties for second score 0. */
@@ -65,27 +68,53 @@ function habitatBonus(sizes) {
 function scoreGame(players) {
   const bonuses = {};
   HABITATS.forEach((h) => {
-    bonuses[h.key] = habitatBonus(players.map((p) => num(p.habitat[h.key])));
+    // Blank on every sheet means the habitat hasn't been scored yet — that is
+    // not a tie at zero, so nobody earns the tie bonus for it.
+    const entered = players.some((p) => String(p.habitat[h.key]).trim() !== "");
+    bonuses[h.key] = entered
+      ? habitatBonus(players.map((p) => num(p.habitat[h.key])))
+      : players.map(() => 0);
   });
   return players.map((p, i) => {
     const wildlife = ANIMALS.reduce((s, a) => s + num(p.wildlife[a.key]), 0);
-    const corridor = HABITATS.reduce((s, h) => s + num(p.habitat[h.key]), 0);
+    const landscape = HABITATS.reduce((s, h) => s + num(p.habitat[h.key]), 0);
     const bonus = HABITATS.reduce((s, h) => s + bonuses[h.key][i], 0);
     const nature = num(p.nature);
     return {
       wildlife,
-      corridor,
+      landscape,
       bonus,
+      // Pinecones are stored under the original `nature` key so old logs load.
       nature,
-      // "Landscape" in the stats: corridors plus the majority bonuses they earn.
-      landscape: corridor + bonus,
+      // The full landscape score: sizes plus the majority bonuses they earn.
+      landscapeTotal: landscape + bonus,
       bonusByHabitat: HABITATS.reduce(
         (o, h) => ((o[h.key] = bonuses[h.key][i]), o),
         {}
       ),
-      total: wildlife + corridor + bonus + nature,
+      total: wildlife + landscape + bonus + nature,
     };
   });
+}
+
+/* Who is ahead. Highest total takes it; level totals are broken by pinecones,
+   and level on both is a real tie. */
+function compareScore(a, b) {
+  if (a.total !== b.total) return a.total - b.total;
+  return a.nature - b.nature;
+}
+
+/* Indexes of everyone sharing top spot — more than one means a tie. */
+function winnersOf(scores) {
+  if (!scores.length) return [];
+  let top = [0];
+  scores.forEach((s, i) => {
+    if (i === 0) return;
+    const c = compareScore(s, scores[top[0]]);
+    if (c > 0) top = [i];
+    else if (c === 0) top.push(i);
+  });
+  return top;
 }
 
 const num = (v) => {
@@ -116,6 +145,7 @@ function newDraft() {
     date: new Date().toISOString().slice(0, 10),
     cards: Object.fromEntries(ANIMALS.map((a) => [a.key, "A"])),
     players: defaultPlayers(),
+    megaC: false,
   };
 }
 
@@ -129,6 +159,8 @@ function buildCoverage(games) {
   const cardCount = Object.fromEntries(
     ANIMALS.map((a) => [a.key, Object.fromEntries(CARDS.map((c) => [c, 0]))])
   );
+  // Card-pair counts are internal only: they let suggestCombo spread its
+  // picks around instead of repeating the same two cards together.
   const pairs = new Map();
 
   games.forEach((g) => {
@@ -208,7 +240,8 @@ function buildRows(games) {
     if (!g.players || !g.players.length) return;
     const s = scoreGame(g.players);
     const totals = s.map((x) => x.total);
-    const best = Math.max(...totals);
+    const top = winnersOf(s);
+    const shared = top.length > 1;
     g.players.forEach((p, i) => {
       rows.push({
         gameId: g.id,
@@ -216,11 +249,14 @@ function buildRows(games) {
         cards: g.cards,
         name: p.name,
         key: nameKey(p.name),
+        megaC: !!g.megaC,
         players: g.players.length,
-        won: s[i].total === best,
+        won: top.includes(i) && !shared,
+        tied: top.includes(i) && shared,
         margin: s[i].total - (totals.length > 1 ? Math.max(...sansOne(totals, i)) : 0),
         animals: Object.fromEntries(ANIMALS.map((a) => [a.key, num(p.wildlife[a.key])])),
-        corridors: Object.fromEntries(HABITATS.map((h) => [h.key, num(p.habitat[h.key])])),
+        sizes: Object.fromEntries(HABITATS.map((h) => [h.key, num(p.habitat[h.key])])),
+        biggest: biggestLandscape(p),
         ...s[i],
       });
     });
@@ -229,6 +265,16 @@ function buildRows(games) {
 }
 
 const sansOne = (arr, i) => arr.filter((_, idx) => idx !== i);
+
+/* The largest single run on a sheet, and which habitat it was. */
+function biggestLandscape(p) {
+  let best = { size: 0, key: HABITATS[0].key };
+  HABITATS.forEach((h) => {
+    const size = num(p.habitat[h.key]);
+    if (size > best.size) best = { size, key: h.key };
+  });
+  return best;
+}
 
 /* Best row for a metric. Rows arrive newest-first, so a strict > keeps the
    most recent holder of a tied record. */
@@ -243,28 +289,34 @@ function recordFor(rows, get) {
 
 function buildStats(games) {
   const rows = buildRows(games);
+  /* Mega C games still count for wins and for combo coverage, but every
+     score-based figure below reads `scored` instead of `rows`. */
+  const scored = rows.filter((r) => !r.megaC);
 
   const records = {
-    total: recordFor(rows, (r) => r.total),
-    wildlife: recordFor(rows, (r) => r.wildlife),
-    landscape: recordFor(rows, (r) => r.landscape),
-    corridor: recordFor(rows, (r) => r.corridor),
-    nature: recordFor(rows, (r) => r.nature),
+    total: recordFor(scored, (r) => r.total),
+    wildlife: recordFor(scored, (r) => r.wildlife),
+    // "Total maps" is the five runs added up; landscapeTotal adds the bonuses.
+    landscapeTotal: recordFor(scored, (r) => r.landscapeTotal),
+    landscape: recordFor(scored, (r) => r.landscape),
+    single: recordFor(scored, (r) => r.biggest.size),
+    nature: recordFor(scored, (r) => r.nature),
     margin: recordFor(
-      rows.filter((r) => r.players > 1 && r.won),
+      scored.filter((r) => r.players > 1 && r.won),
       (r) => r.margin
     ),
     animals: Object.fromEntries(
-      ANIMALS.map((a) => [a.key, recordFor(rows, (r) => r.animals[a.key])])
+      ANIMALS.map((a) => [a.key, recordFor(scored, (r) => r.animals[a.key])])
     ),
     habitats: Object.fromEntries(
-      HABITATS.map((h) => [h.key, recordFor(rows, (r) => r.corridors[h.key])])
+      HABITATS.map((h) => [h.key, recordFor(scored, (r) => r.sizes[h.key])])
     ),
   };
 
   /* Head to head: only games where both regulars sat down. */
   const h2h = {
     games: 0,
+    scored: 0,
     wins: Object.fromEntries(REGULARS.map((r) => [r.key, 0])),
     ties: 0,
     points: Object.fromEntries(REGULARS.map((r) => [r.key, 0])),
@@ -285,41 +337,60 @@ function buildStats(games) {
   // byGame preserves rows order, which is games order: newest first.
   h2hGames.forEach(({ seats }) => {
     h2h.games++;
-    const top = Math.max(...seats.map((s) => s.total));
-    const leaders = seats.filter((s) => s.total === top);
+    const leaders = winnersOf(seats).map((i) => seats[i]);
     if (leaders.length > 1) h2h.ties++;
     else h2h.wins[leaders[0].key]++;
-    seats.forEach((s) => {
-      h2h.points[s.key] += s.total;
-      if (s.total > h2h.best[s.key]) h2h.best[s.key] = s.total;
-    });
+    if (!seats[0].megaC) {
+      h2h.scored++;
+      seats.forEach((s) => {
+        h2h.points[s.key] += s.total;
+        if (s.total > h2h.best[s.key]) h2h.best[s.key] = s.total;
+      });
+    }
   });
   for (const { seats } of h2hGames) {
-    const top = Math.max(...seats.map((s) => s.total));
-    const leaders = seats.filter((s) => s.total === top);
-    if (leaders.length > 1) break;
+    const leaders = winnersOf(seats).map((i) => seats[i]);
+    if (leaders.length > 1) {
+      // A tie at the top of the log is worth saying out loud.
+      if (h2h.streak.key === null) h2h.lastTied = true;
+      break;
+    }
     if (h2h.streak.key === null) h2h.streak.key = leaders[0].key;
     else if (h2h.streak.key !== leaders[0].key) break;
     h2h.streak.n++;
   }
   h2h.avg = Object.fromEntries(
-    REGULARS.map((r) => [r.key, h2h.games ? h2h.points[r.key] / h2h.games : 0])
+    REGULARS.map((r) => [r.key, h2h.scored ? h2h.points[r.key] / h2h.scored : 0])
   );
 
   /* Per-player season line, including guests. */
   const people = new Map();
   rows.forEach((r) => {
     if (!people.has(r.key))
-      people.set(r.key, { key: r.key, name: r.name, games: 0, wins: 0, sum: 0, best: 0 });
+      people.set(r.key, {
+        key: r.key,
+        name: r.name,
+        games: 0,
+        wins: 0,
+        ties: 0,
+        scored: 0,
+        sum: 0,
+        best: 0,
+      });
     const p = people.get(r.key);
     p.games++;
     if (r.won) p.wins++;
+    if (r.tied) p.ties++;
+    if (r.megaC) return;
+    p.scored++;
     p.sum += r.total;
     if (r.total > p.best) p.best = r.total;
   });
 
   return {
     rows,
+    scored,
+    megaCount: games.filter((g) => g.megaC).length,
     records,
     h2h,
     people: [...people.values()].sort((a, b) => b.games - a.games),
@@ -356,12 +427,8 @@ function cardMeans(rows, playerKey) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Hex primitives                                                      */
+/* Hex primitive — the header mark                                     */
 /* ------------------------------------------------------------------ */
-
-const HEX_R = 8;
-const HEX_W = Math.sqrt(3) * HEX_R;
-const HEX_VSTEP = 1.5 * HEX_R;
 
 function hexPoints(cx, cy, r) {
   const pts = [];
@@ -370,14 +437,6 @@ function hexPoints(cx, cy, r) {
     pts.push(`${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`);
   }
   return pts.join(" ");
-}
-
-function tint(count) {
-  if (!count) return 0;
-  if (count === 1) return 0.32;
-  if (count === 2) return 0.58;
-  if (count < 5) return 0.78;
-  return 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -562,15 +621,7 @@ function Home({ games, cov, stats, onPlay, onGo }) {
   const pct = (cov.played.size / TOTAL_COMBOS) * 100;
   const { h2h } = stats;
   const streaker = REGULARS.find((r) => r.key === h2h.streak.key);
-  const means = useMemo(() => cardMeans(stats.rows, null), [stats.rows]);
-
-  const freshPairs = useMemo(() => {
-    let n = 0;
-    for (let i = 0; i < ANIMALS.length; i++)
-      for (let j = i + 1; j < ANIMALS.length; j++)
-        if (!cov.pairs.has(pairKey(i, j, pick[ANIMALS[i].key], pick[ANIMALS[j].key]))) n++;
-    return n;
-  }, [pick, cov]);
+  const means = useMemo(() => cardMeans(stats.scored, null), [stats.scored]);
 
   return (
     <div>
@@ -587,8 +638,7 @@ function Home({ games, cov, stats, onPlay, onGo }) {
           />
         </div>
         <p className="cs-hero-sub mono">
-          {pct.toFixed(3)}% of every wildlife scoring-card combination ·{" "}
-          {cov.pairs.size}/{TOTAL_PAIRS} pairings seen
+          {pct.toFixed(3)}% of every wildlife scoring-card combination
         </p>
       </section>
 
@@ -619,9 +669,7 @@ function Home({ games, cov, stats, onPlay, onGo }) {
           </div>
           <div className="cs-suggest-side">
             <p className="cs-legend">
-              Never played. {freshPairs > 0
-                ? `${freshPairs} of its 10 card pairings are new too.`
-                : "Every pairing in it has shown up before, but not all five at once."}
+              A combination you have never played.
             </p>
             <button className="cs-save sm" onClick={() => onPlay(pick)}>
               Score this game
@@ -635,7 +683,10 @@ function Home({ games, cov, stats, onPlay, onGo }) {
           <h2>Head to head</h2>
           <p className="cs-legend">
             {h2h.games
-              ? `${h2h.games} game${h2h.games === 1 ? "" : "s"} with both of you at the table.`
+              ? `${h2h.games} game${h2h.games === 1 ? "" : "s"} with both of you at the table.` +
+                (h2h.games > h2h.scored
+                  ? ` Averages skip ${h2h.games - h2h.scored} Mega C.`
+                  : "")
               : "No games yet with both of you at the table."}
           </p>
         </div>
@@ -644,16 +695,13 @@ function Home({ games, cov, stats, onPlay, onGo }) {
             <React.Fragment key={r.key}>
               {i === 1 && (
                 <div className="cs-h2h-mid">
-                  <span className="mono cs-h2h-score">
-                    {h2h.wins[REGULARS[0].key]}–{h2h.wins[REGULARS[1].key]}
-                    {h2h.ties ? `–${h2h.ties}` : ""}
-                  </span>
-                  <span className="cs-h2h-note">
-                    {h2h.ties ? "W–L–T" : "wins"}
-                    {streaker && h2h.streak.n > 1
-                      ? ` · ${streaker.label} on ${h2h.streak.n}`
+                  <span className="mono cs-h2h-games">
+                    {h2h.games} game{h2h.games === 1 ? "" : "s"}
+                    {h2h.ties
+                      ? ` · ${h2h.ties} tie${h2h.ties === 1 ? "" : "s"}`
                       : ""}
                   </span>
+                  <span className="cs-h2h-note">{streakLine(h2h, streaker)}</span>
                 </div>
               )}
               <div className="cs-h2h-side">
@@ -661,6 +709,9 @@ function Home({ games, cov, stats, onPlay, onGo }) {
                   {r.label}
                 </span>
                 <span className="mono cs-h2h-w">{h2h.wins[r.key]}</span>
+                <span className="cs-h2h-wlabel">
+                  win{h2h.wins[r.key] === 1 ? "" : "s"}
+                </span>
                 <span className="cs-h2h-meta mono">
                   avg {h2h.games ? h2h.avg[r.key].toFixed(1) : "–"} · best{" "}
                   {h2h.best[r.key] || "–"}
@@ -681,9 +732,14 @@ function Home({ games, cov, stats, onPlay, onGo }) {
         <div className="cs-rec-grid">
           <Record label="Highest score" rec={stats.records.total} />
           <Record label="Highest wildlife" rec={stats.records.wildlife} />
-          <Record label="Highest landscape" rec={stats.records.landscape} />
-          <Record label="Most nature tokens" rec={stats.records.nature} />
-          <Record label="Longest corridors" rec={stats.records.corridor} />
+          <Record
+            label="Highest single landscape"
+            rec={stats.records.single}
+            tag={(r) => habitatLabel(r.biggest.key)}
+          />
+          <Record label="Highest total maps" rec={stats.records.landscape} />
+          <Record label="Highest total maps + bonuses" rec={stats.records.landscapeTotal} />
+          <Record label="Most pinecones" rec={stats.records.nature} />
           <Record label="Biggest blowout" rec={stats.records.margin} prefix="+" />
         </div>
       </section>
@@ -691,7 +747,9 @@ function Home({ games, cov, stats, onPlay, onGo }) {
       <section className="cs-panel">
         <div className="cs-panel-head">
           <h2>Best card per animal</h2>
-          <p className="cs-legend">Highest average wildlife score, all players.</p>
+          <p className="cs-legend">
+            Highest average wildlife score, all players, Mega C excluded.
+          </p>
         </div>
         <div className="cs-bestcards">
           {ANIMALS.map((a) => {
@@ -723,7 +781,17 @@ function Home({ games, cov, stats, onPlay, onGo }) {
   );
 }
 
-function Record({ label, rec, prefix = "", color }) {
+/* What the middle of the head-to-head panel says under the game count. */
+function streakLine(h2h, streaker) {
+  if (!h2h.games) return "no games yet";
+  if (h2h.lastTied) return "last game tied";
+  if (!streaker) return "";
+  if (h2h.streak.n === 1) return `${streaker.label} won last`;
+  return `${streaker.label} won last ${h2h.streak.n}`;
+}
+
+function Record({ label, rec, prefix = "", color, tag }) {
+  const tagText = rec && tag ? tag(rec.row) : null;
   return (
     <div className="cs-rec">
       <span className="cs-stat-label" style={color ? { color } : undefined}>
@@ -731,6 +799,7 @@ function Record({ label, rec, prefix = "", color }) {
       </span>
       <span className="cs-rec-value mono">
         {rec ? `${prefix}${rec.value}` : "–"}
+        {tagText ? <em className="cs-rec-tag">{tagText}</em> : null}
       </span>
       {rec ? (
         <span className="cs-rec-who">
@@ -751,31 +820,20 @@ function Record({ label, rec, prefix = "", color }) {
 /* ------------------------------------------------------------------ */
 
 function LogGame({ cov, draft, setDraft, onSave }) {
-  const { date, cards, players } = draft;
+  const { date, cards, players, megaC } = draft;
   const [saved, setSaved] = useState(false);
 
   const setDate = (v) => setDraft((d) => ({ ...d, date: v }));
   const setCards = (v) => setDraft((d) => ({ ...d, cards: v }));
+  const setMegaC = (v) => setDraft((d) => ({ ...d, megaC: v }));
   const setPlayers = (fn) =>
     setDraft((d) => ({ ...d, players: typeof fn === "function" ? fn(d.players) : fn }));
 
   const key = comboKey(cards);
   const timesPlayed = cov.comboCount.get(key) || 0;
-  const freshPairs = useMemo(() => {
-    let n = 0;
-    for (let i = 0; i < ANIMALS.length; i++)
-      for (let j = i + 1; j < ANIMALS.length; j++)
-        if (
-          !cov.pairs.has(
-            pairKey(i, j, cards[ANIMALS[i].key], cards[ANIMALS[j].key])
-          )
-        )
-          n++;
-    return n;
-  }, [cards, cov]);
-
   const scores = scoreGame(players);
-  const leader = Math.max(...scores.map((s) => s.total));
+  const leaders = winnersOf(scores);
+
 
   const setCount = (n) => {
     setPlayers((prev) => {
@@ -796,6 +854,7 @@ function LogGame({ cov, draft, setDraft, onSave }) {
     onSave({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       date,
+      megaC: !!megaC,
       cards: { ...cards },
       players: players.map((p) => ({
         ...p,
@@ -804,6 +863,7 @@ function LogGame({ cov, draft, setDraft, onSave }) {
       })),
     });
     setPlayers((prev) => prev.map((p) => emptyPlayer(p.name, p.isYou)));
+    setMegaC(false); // classify each game on its own, never by inheritance
     setSaved(true);
     setTimeout(() => setSaved(false), 2200);
   };
@@ -854,10 +914,7 @@ function LogGame({ cov, draft, setDraft, onSave }) {
           <strong className="mono">{comboLabel(cards)}</strong>
           {timesPlayed === 0
             ? " is new to you."
-            : ` has come up ${timesPlayed} time${timesPlayed === 1 ? "" : "s"} before.`}{" "}
-          {freshPairs > 0
-            ? `${freshPairs} of its 10 card pairings are still unseen.`
-            : "Every pairing in it has already appeared."}
+            : ` has come up ${timesPlayed} time${timesPlayed === 1 ? "" : "s"} before.`}
         </p>
       </div>
 
@@ -880,6 +937,14 @@ function LogGame({ cov, draft, setDraft, onSave }) {
                 </button>
               ))}
             </div>
+            <label className="cs-mega">
+              <input
+                type="checkbox"
+                checked={!!megaC}
+                onChange={(e) => setMegaC(e.target.checked)}
+              />
+              <span>Mega C?</span>
+            </label>
           </div>
         </div>
 
@@ -889,6 +954,8 @@ function LogGame({ cov, draft, setDraft, onSave }) {
               <input
                 className="cs-name"
                 value={p.name}
+                placeholder={`Player ${i + 1}`}
+                onFocus={(e) => e.target.select()}
                 onChange={(e) => patch(i, (q) => ({ ...q, name: e.target.value }))}
               />
               <button
@@ -900,7 +967,7 @@ function LogGame({ cov, draft, setDraft, onSave }) {
               >
                 {p.isYou ? "Your sheet" : "Mark as yours"}
               </button>
-              <span className={"cs-total" + (scores[i].total === leader ? " lead" : "")}>
+              <span className={"cs-total" + (leaders.includes(i) ? " lead" : "")}>
                 {scores[i].total}
               </span>
             </div>
@@ -940,13 +1007,13 @@ function LogGame({ cov, draft, setDraft, onSave }) {
 
             <div className="cs-tail">
               <Field
-                label="Nature tokens"
+                label="Pinecones"
                 value={p.nature}
                 onChange={(v) => patch(i, (q) => ({ ...q, nature: v }))}
               />
               <p className="cs-break mono">
-                wildlife {scores[i].wildlife} · corridors {scores[i].corridor} · majorities{" "}
-                {scores[i].bonus} · tokens {scores[i].nature}
+                wildlife {scores[i].wildlife} · landscapes {scores[i].landscape} ·
+                majorities {scores[i].bonus} · pinecones {scores[i].nature}
               </p>
             </div>
           </div>
@@ -955,6 +1022,12 @@ function LogGame({ cov, draft, setDraft, onSave }) {
         <button className="cs-save" onClick={save}>
           {saved ? "Recorded" : "Record this game"}
         </button>
+        {megaC && (
+          <p className="cs-mega-note">
+            Logged as Mega C: counts for the win-loss record and the combo, but is left
+            out of every score record and average.
+          </p>
+        )}
       </div>
     </section>
   );
@@ -996,10 +1069,11 @@ function GamesList({ games, cov, onDelete }) {
     <div className="cs-panel">
       {games.map((g) => {
         const s = scoreGame(g.players);
-        const best = Math.max(...s.map((x) => x.total));
-        const winner = g.players[s.findIndex((x) => x.total === best)];
+        const top = winnersOf(s);
+        const winner = g.players[top[0]];
+        const best = s[top[0]].total;
         const first = cov.comboCount.get(comboKey(g.cards)) === 1;
-        const reg = regularFor(winner.name);
+        const reg = top.length > 1 ? null : regularFor(winner.name);
         return (
           <div className="cs-game" key={g.id}>
             <button className="cs-game-head" onClick={() => setOpen(open === g.id ? null : g.id)}>
@@ -1012,8 +1086,11 @@ function GamesList({ games, cov, onDelete }) {
                 ))}
               </span>
               {first && <span className="cs-first">first time</span>}
+              {g.megaC && <span className="cs-megatag">mega C</span>}
               <span className="cs-winner" style={reg ? { color: reg.color } : undefined}>
-                {displayName(winner.name)} {best}
+                {top.length > 1
+                  ? `tied ${best}`
+                  : `${displayName(winner.name)} ${best}`}
               </span>
             </button>
 
@@ -1034,7 +1111,7 @@ function GamesList({ games, cov, onDelete }) {
                         </th>
                       ))}
                       <th>Maj</th>
-                      <th>Tok</th>
+                      <th>Pine</th>
                       <th>Total</th>
                     </tr>
                   </thead>
@@ -1073,7 +1150,7 @@ function GamesList({ games, cov, onDelete }) {
 
 function Stats({ games, cov, stats }) {
   const [who, setWho] = useState("all"); // "all" | a regular's key
-  const rows = stats.rows;
+  const rows = stats.scored;
   const means = useMemo(
     () => cardMeans(rows, who === "all" ? null : who),
     [rows, who]
@@ -1088,18 +1165,26 @@ function Stats({ games, cov, stats }) {
           value={cov.played.size.toLocaleString()}
           sub={`of ${TOTAL_COMBOS.toLocaleString()} · ${pct.toFixed(3)}%`}
         />
-        <Stat label="Card pairings" value={`${cov.pairs.size}`} sub={`of ${TOTAL_PAIRS}`} />
         <Stat
           label="Games recorded"
           value={`${games.length}`}
-          sub={games.length ? `${cov.played.size} were a first` : "—"}
+          sub={
+            games.length
+              ? stats.megaCount
+                ? `${stats.megaCount} Mega C, not scored`
+                : `${cov.played.size} were a first`
+              : "—"
+          }
         />
       </div>
 
       <div className="cs-panel">
         <div className="cs-panel-head">
           <h2>Players</h2>
-          <p className="cs-legend">Every seat that has been logged, best first.</p>
+          <p className="cs-legend">
+            Every seat that has been logged. Games and wins count Mega C; averages and
+            bests do not.
+          </p>
         </div>
         {stats.people.length ? (
           <table className="cs-table mono cs-people">
@@ -1108,6 +1193,7 @@ function Stats({ games, cov, stats }) {
                 <th className="cs-td-name">Player</th>
                 <th>Games</th>
                 <th>Wins</th>
+                <th>Ties</th>
                 <th>Win %</th>
                 <th>Avg</th>
                 <th>Best</th>
@@ -1123,9 +1209,10 @@ function Stats({ games, cov, stats }) {
                     </td>
                     <td>{p.games}</td>
                     <td>{p.wins}</td>
+                    <td>{p.ties}</td>
                     <td>{((p.wins / p.games) * 100).toFixed(0)}%</td>
-                    <td>{(p.sum / p.games).toFixed(1)}</td>
-                    <td className="cs-td-total">{p.best}</td>
+                    <td>{p.scored ? (p.sum / p.scored).toFixed(1) : "–"}</td>
+                    <td className="cs-td-total">{p.scored ? p.best : "–"}</td>
                   </tr>
                 );
               })}
@@ -1139,14 +1226,19 @@ function Stats({ games, cov, stats }) {
       <div className="cs-panel">
         <div className="cs-panel-head">
           <h2>Records</h2>
-          <p className="cs-legend">Single-game highs, and who set them.</p>
+          <p className="cs-legend">Single-game highs, and who set them. Mega C excluded.</p>
         </div>
         <div className="cs-rec-grid">
           <Record label="Highest score" rec={stats.records.total} />
           <Record label="Highest wildlife" rec={stats.records.wildlife} />
-          <Record label="Highest landscape" rec={stats.records.landscape} />
-          <Record label="Longest corridors" rec={stats.records.corridor} />
-          <Record label="Most nature tokens" rec={stats.records.nature} />
+          <Record
+            label="Highest single landscape"
+            rec={stats.records.single}
+            tag={(r) => habitatLabel(r.biggest.key)}
+          />
+          <Record label="Highest total maps" rec={stats.records.landscape} />
+          <Record label="Highest total maps + bonuses" rec={stats.records.landscapeTotal} />
+          <Record label="Most pinecones" rec={stats.records.nature} />
           <Record label="Biggest blowout" rec={stats.records.margin} prefix="+" />
         </div>
 
@@ -1157,7 +1249,7 @@ function Stats({ games, cov, stats }) {
           ))}
         </div>
 
-        <h3 className="cs-subhead">Longest single corridor</h3>
+        <h3 className="cs-subhead">Biggest run of each type</h3>
         <div className="cs-rec-grid tight">
           {HABITATS.map((h) => (
             <Record key={h.key} label={h.label} rec={stats.records.habitats[h.key]} color={h.color} />
@@ -1233,19 +1325,6 @@ function Stats({ games, cov, stats }) {
 
       <div className="cs-panel">
         <div className="cs-panel-head">
-          <h2>Pairings</h2>
-          <p className="cs-legend">
-            Each hex is one pair of scoring cards. Filled means you have played them
-            together.
-          </p>
-        </div>
-        <div className="cs-lattice-scroll">
-          <PairLattice pairs={cov.pairs} />
-        </div>
-      </div>
-
-      <div className="cs-panel">
-        <div className="cs-panel-head">
           <h2>Card usage</h2>
         </div>
         <div className="cs-usage">
@@ -1291,66 +1370,6 @@ function Stat({ label, value, sub }) {
       <span className="cs-stat-value mono">{value}</span>
       <span className="cs-stat-sub mono">{sub}</span>
     </div>
-  );
-}
-
-function PairLattice({ pairs }) {
-  const rows = ANIMALS.slice(1); // elk..fox
-  const cols = ANIMALS.slice(0, 4); // bear..hawk
-  const gw = 7 * HEX_W + HEX_W / 2;
-  const gh = 6 * HEX_VSTEP + 2 * HEX_R;
-  const padL = 42;
-  const padT = 20;
-  const cellW = gw + 16;
-  const cellH = gh + 22;
-  const width = padL + cols.length * cellW;
-  const height = padT + rows.length * cellH;
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className="cs-lattice">
-      {cols.map((c, ci) => (
-        <text key={c.key} x={padL + ci * cellW + gw / 2} y={12} className="cs-lat-label" textAnchor="middle" fill={c.color}>
-          {c.label}
-        </text>
-      ))}
-      {rows.map((r, ri) => (
-        <text key={r.key} x={padL - 8} y={padT + ri * cellH + gh / 2} className="cs-lat-label" textAnchor="end" fill={r.color}>
-          {r.label}
-        </text>
-      ))}
-      {rows.map((r, ri) =>
-        cols.map((c, ci) => {
-          const i = ANIMALS.findIndex((a) => a.key === c.key);
-          const j = ANIMALS.findIndex((a) => a.key === r.key);
-          if (i >= j) return null;
-          const ox = padL + ci * cellW;
-          const oy = padT + ri * cellH;
-          return (
-            <g key={`${r.key}-${c.key}`}>
-              {CARDS.map((lj, row) =>
-                CARDS.map((li, col) => {
-                  const n = pairs.get(pairKey(i, j, li, lj)) || 0;
-                  const cx = ox + HEX_W / 2 + col * HEX_W + (row % 2) * (HEX_W / 2);
-                  const cy = oy + HEX_R + row * HEX_VSTEP;
-                  return (
-                    <polygon
-                      key={`${li}${lj}`}
-                      points={hexPoints(cx, cy, HEX_R - 0.7)}
-                      fill={r.color}
-                      fillOpacity={tint(n)}
-                      stroke={n ? "none" : "#B9C2B8"}
-                      strokeWidth="0.6"
-                    >
-                      <title>{`${c.label} ${li} + ${r.label} ${lj}: ${n} game${n === 1 ? "" : "s"}`}</title>
-                    </polygon>
-                  );
-                })
-              )}
-            </g>
-          );
-        })
-      )}
-    </svg>
   );
 }
 
@@ -1424,13 +1443,15 @@ const CSS = `
 .cs-h2h-w { font-size: 34px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
 .cs-h2h-meta { font-size: 11px; color: var(--ink-2); }
 .cs-h2h-mid { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 0 6px; }
-.cs-h2h-score { font-size: 18px; font-weight: 600; color: var(--ink-2); }
+.cs-h2h-games { font-size: 15px; font-weight: 600; color: var(--ink-2); }
+.cs-h2h-wlabel { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); font-weight: 600; }
 .cs-h2h-note { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); }
 
 .cs-rec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
 .cs-rec-grid.tight { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .cs-rec { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); padding-left: 10px; }
 .cs-rec-value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+.cs-rec-tag { font-style: normal; font-family: 'Inter Tight', system-ui, sans-serif; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-left: 6px; letter-spacing: 0; }
 .cs-rec-who { font-size: 11px; color: var(--ink-2); }
 .cs-rec-who strong { font-weight: 600; color: var(--ink); }
 
@@ -1458,6 +1479,11 @@ const CSS = `
 .cs-seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .cs-segbtn { font-family: 'IBM Plex Mono', monospace; font-size: 12px; border: none; background: #fff; padding: 5px 9px; cursor: pointer; color: var(--ink-2); }
 .cs-segbtn.on { background: var(--ink); color: #fff; }
+
+.cs-mega { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; user-select: none; }
+.cs-mega input { width: 15px; height: 15px; accent-color: #35604A; cursor: pointer; margin: 0; }
+.cs-mega-note { font-size: 11px; color: var(--ink-2); margin: 8px 0 0; text-align: center; }
+.cs-megatag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #8A5A2B; border: 1px solid #E0C9A8; background: #FBF3E8; border-radius: 20px; padding: 2px 7px; }
 
 .cs-player { border-top: 1px solid var(--line); padding: 14px 0 4px; }
 .cs-player-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -1507,10 +1533,6 @@ const CSS = `
 .cs-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); font-weight: 600; }
 .cs-stat-value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; }
 .cs-stat-sub { font-size: 11px; color: var(--ink-2); }
-
-.cs-lattice-scroll { overflow-x: auto; }
-.cs-lattice { display: block; max-width: 100%; height: auto; }
-.cs-lat-label { font-family: 'IBM Plex Mono', monospace; font-size: 8.5px; font-weight: 600; }
 
 .cs-usage-row { display: flex; align-items: flex-end; gap: 12px; padding: 6px 0; }
 .cs-bars { display: flex; gap: 6px; align-items: flex-end; }

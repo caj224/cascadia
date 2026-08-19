@@ -17,6 +17,10 @@ Four pages:
 The two regulars are set by `REGULARS` in `src/App.jsx`. Names are matched
 case-insensitively, so "caleb" and "Caleb" count as one person.
 
+Habitat tiles are labelled Mountain, Peas, Grass, Prairie and River, and the tokens are
+pinecones. The labels live in `HABITATS`; the underlying storage keys are unchanged
+(`forest`, `wetland`, `nature`) so older logs and exports still import cleanly.
+
 Runs entirely in the browser. No account, no backend. Data lives in `localStorage`
 under the key `cascadia:v1` and never leaves the device.
 
@@ -59,6 +63,20 @@ Open the deployed URL, then:
 It launches full screen and works offline after the first load. Fonts come from Google
 Fonts, so the very first load needs a connection; after that everything is cached.
 
+## Keeping your data
+
+The log lives in `localStorage` under `cascadia:v1`, tied to the origin it was logged on.
+Deploying a new build never touches it, so you can keep playing while the app changes.
+
+On first load the app calls `navigator.storage.persist()`. WebKit clears localStorage
+after 7 days without a visit unless the origin is persisted, and Chrome grants
+persistence readily to installed apps. Two things matter beyond that:
+
+- **Install to the home screen on iOS.** Home-screen web apps sit outside Safari and keep
+  their own use-based clock, so ordinary play keeps resetting it.
+- **Export now and then anyway.** Persistence is a request, not a guarantee, and storage
+  is per-device: your phone and any other device keep separate logs.
+
 ## Moving your data
 
 The artifact version and this version use the same JSON format. Hit **Export log** in one
@@ -80,7 +98,7 @@ games in both.
   card and `TOTAL_COMBOS` recomputes on its own.
 - **Who the regulars are.** `REGULARS` — drives the head-to-head panel, the name
   colours, and the per-player filter on the stats page.
-- **Corridor majority scoring.** `habitatBonus()` — one function, all player counts.
+- **Landscape majority scoring.** `habitatBonus()` — one function, all player counts.
 - **Coverage math.** `buildCoverage()` and `suggestCombo()`.
 - **Stats.** `buildStats()` builds one row per player per game; `recordFor()` picks the
   record holders and `cardMeans()` does the per-card averages.
