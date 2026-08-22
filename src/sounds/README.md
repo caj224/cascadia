@@ -19,10 +19,14 @@ file — no code change, no list to update.
 
 A tie never uses a personal win sound, only `tie.*` or `fanfare.*`.
 
+Only the trimmed clips live here. The full-length originals they were cut from
+are not kept in the repo — they are large, and nothing in the build reads them.
+
 ## What is here now
 
 | File | Source |
 |---|---|
+| `drumroll.m4a` | Epidemic Sound tight snare roll, its last 3.2s |
 | `fanfare.m4a` | Applause, first 5s of the Epidemic Sound crowd clip |
 | `win-dad.m4a` | Britney Spears, 0:49–0:54 |
 | `win-mom.m4a` | First 5s of `denver.mp3` |

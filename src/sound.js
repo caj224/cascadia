@@ -171,12 +171,6 @@ export function unlock() {
 export const audioBlocked = () =>
   !muted && !!ctx && ctx.state !== "running";
 
-/* Short confirmation blip, so the sound toggle proves itself out loud. */
-export function blip() {
-  const ac = audio();
-  if (!ac) return;
-  tone(ac, ac.currentTime + 0.01, 880, 0.16, 0.18);
-}
 
 /* One second of white noise, shared by every drum hit and the crash. */
 function noiseBuffer(ac) {

@@ -32,20 +32,18 @@ Recording a game with two or more players rolls a drumroll, then announces the w
 over the scorepad. The game is saved before the announcement appears, so skipping or
 dismissing it never costs you the entry; solo games skip it entirely.
 
-Everything is synthesised at runtime with the Web Audio API in `src/sound.js` — there
-are no audio files, so sound works offline from the first load and the service worker
-has nothing extra to cache. `drumroll()` schedules an accelerating run of noise hits
-over a low rumble; `fanfare()` plays a rising four-note run for a win and a flat pair
-for a tie.
+The clips in `src/sounds/` supply all of it. Behind them, `src/sound.js` can synthesise
+a roll and a fanfare with the Web Audio API, which is what plays for any role with no
+file: `drumroll()` schedules an accelerating run of noise hits over a low rumble, and
+`fanfare()` plays a rising four-note run for a win, a flat pair for a tie. To retune
+those, the `notes` array sets the fanfare and `ROLL_SECONDS` sets the roll length.
 
-The **Sound on / Sound off** button in the footer is stored under `cascadia:muted`.
-Muted still shows the announcement, just silently. Two things are outside the app's
-control: iOS only starts audio inside a tap (which is why the context is opened in the
-save handler), and iOS Safari honours the hardware silent switch, so a phone on silent
-stays silent.
-
-To retune the synthesised versions: the `notes` array in `src/sound.js` sets the
-fanfare, and `ROLL_SECONDS` in the same file sets the roll length.
+The **Sound on / Sound off** button in the footer is stored under `cascadia:muted` and
+shows a speaker icon — waves when sound is on, struck through when it is off. Muted
+still shows the announcement, just silently. Two things are outside the app's control:
+iOS only starts audio inside a tap (which is why the context is opened in the save
+handler), and iOS Safari honours the hardware silent switch, so a phone on silent stays
+silent.
 
 ### Using your own recordings
 

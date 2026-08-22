@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { store } from "./store.js";
-import { audioBlocked, blip, drumroll, fanfare, hushFanfare, isMuted, setMuted, unlock } from "./sound.js";
+import { audioBlocked, drumroll, fanfare, hushFanfare, isMuted, setMuted, unlock } from "./sound.js";
 
 /* ------------------------------------------------------------------ */
 /* Domain                                                              */
@@ -693,20 +693,16 @@ export default function CascadiaTracker() {
 
       <footer className="cs-foot">
         <button
-          className="cs-ghost"
+          className={"cs-ghost cs-sound" + (quiet ? " off" : "")}
           aria-pressed={!quiet}
           onClick={() => {
             const next = !quiet;
             setQuiet(next);
             setMuted(next);
-            // Switching sound on plays a blip, so the button proves out loud
-            // that audio actually works on this device.
-            if (!next) {
-              unlock();
-              blip();
-            }
+            if (!next) unlock();
           }}
         >
+          <SpeakerIcon on={!quiet} />
           {quiet ? "Sound off" : "Sound on"}
         </button>
         <button className="cs-ghost" onClick={exportJson}>
@@ -957,6 +953,33 @@ function streakLine(h2h, streaker) {
   if (!streaker) return "";
   if (h2h.streak.n === 1) return `${streaker.label} won last`;
   return `${streaker.label} won last ${h2h.streak.n}`;
+}
+
+/* Speaker with waves when sound is on, struck through when it is off. The
+   shape carries the state, not just the colour. */
+function SpeakerIcon({ on }) {
+  return (
+    <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true" focusable="false">
+      <path d="M3.5 7.6h3L10.5 4.2v11.6L6.5 12.4h-3z" fill="currentColor" />
+      {on ? (
+        <g fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+          <path d="M13.2 7.4a3.6 3.6 0 0 1 0 5.2" />
+          <path d="M15.6 5.4a6.8 6.8 0 0 1 0 9.2" />
+        </g>
+      ) : (
+        /* The slash sits where the waves would be rather than across the whole
+           icon: at 15px a full-width slash eats the speaker and the result
+           reads as a stray mark instead of a muted speaker. */
+        <path
+          d="M12.4 14.6L18.4 5.4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+      )}
+    </svg>
+  );
 }
 
 function Record({ label, rec, prefix = "", color, tag }) {
@@ -1863,6 +1886,10 @@ const CSS = `
 .cs-streak-row { display: flex; align-items: baseline; gap: 8px; }
 .cs-streak-rname { font-weight: 600; font-size: 14px; flex: 1; }
 .cs-streak-rn { font-size: 20px; font-weight: 600; }
+
+.cs-sound { display: inline-flex; align-items: center; gap: 7px; color: #35604A; }
+.cs-sound.off { color: var(--ink-2); }
+.cs-sound.off svg { opacity: 0.75; }
 
 @media (max-width: 620px) {
   .cs-streaks { grid-template-columns: 1fr; }
