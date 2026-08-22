@@ -55,8 +55,8 @@ role — `drumroll.*`, `fanfare.*`, `win-<name>.*` for one person's win, and opt
 register: the build picks up whatever is in the folder, so giving somebody their own
 win sound is just adding `win-<their-name>.m4a`.
 
-Today a win plays applause, except by Caleb ("Vernon's Strut"), Dad (Britney Spears) or
-Mom (John Denver).
+Today each regular has their own: Caleb gets "Vernon's Strut", Allison "Teamwork", Dad
+a Britney Spears clip and Mom John Denver. Guests, and every tie, get applause.
 
 Anything you leave out keeps its synthesised version, and a file that is missing or
 will not decode falls back to the synth rather than playing nothing. A `drumroll.*`

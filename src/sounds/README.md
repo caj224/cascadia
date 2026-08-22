@@ -27,6 +27,7 @@ A tie never uses a personal win sound, only `tie.*` or `fanfare.*`.
 | `win-dad.m4a` | Britney Spears, 0:49–0:54 |
 | `win-mom.m4a` | First 5s of `denver.mp3` |
 | `win-caleb.m4a` | First 5s of "Vernon's Strut", Sven Andersson |
+| `win-allison.m4a` | First 5s of "Teamwork", Stationary Sign |
 
 Both are trimmed to 5s, level-matched to the same RMS so neither is jarringly
 louder, and given a 0.4s fade-out (plus a short fade-in on the Britney clip,
