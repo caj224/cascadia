@@ -1064,13 +1064,6 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
         tie: board.filter((r) => r.tied).length > 1,
         margin: beaten ? board[0].total - beaten.total : 0,
         winnerKey: nameKey(board[0].name),
-        /* One sting per game: a new blowout is the more specific — and the
-           funnier — of the two, so it wins when both apply. */
-        sting: broken.some((b) => b.label === "Biggest blowout")
-          ? "blowout"
-          : broken.length
-          ? "record"
-          : null,
         megaC: !!megaC,
         broken,
       });
@@ -1270,7 +1263,7 @@ function WinnerReveal({ result, onClose }) {
     const roll = drumroll();
     stopRoll.current = roll.stop;
     const t = setTimeout(() => {
-      fanfare(result.tie, result.winnerKey, result.sting);
+      fanfare(result.tie, result.winnerKey);
       setPhase("show");
     }, roll.seconds * 1000);
     return () => {
@@ -1283,7 +1276,7 @@ function WinnerReveal({ result, onClose }) {
   const skip = () => {
     if (phase === "show") return onClose();
     if (stopRoll.current) stopRoll.current();
-    fanfare(result.tie, result.winnerKey, result.sting);
+    fanfare(result.tie, result.winnerKey);
     setPhase("show");
   };
 

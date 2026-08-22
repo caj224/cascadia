@@ -11,8 +11,6 @@ The **filename is the role**:
 | `fanfare.*` | Any win, unless the winner has their own file |
 | `win-<name>.*` | That person wins — `win-dad.*` plays when Dad wins |
 | `tie.*` | A tie is revealed — optional, `fanfare.*` covers it |
-| `blowout.*` | A new biggest-blowout record, after the win sound |
-| `record.*` | Any other new record, after the win sound |
 
 The name in `win-<name>.*` is matched the way names are matched everywhere else
 in the app: trimmed and lower-cased. `win-dad.m4a` covers "Dad", "dad" and
@@ -21,13 +19,6 @@ file — no code change, no list to update.
 
 A tie never uses a personal win sound, only `tie.*` or `fanfare.*`.
 
-## Record stings
-
-`blowout.*` and `record.*` are not win sounds — they follow one. When a game
-breaks an all-time record the sting lands on the tail of the win clip, so the
-two read as one moment rather than fighting each other. One sting per game: a
-new biggest blowout wins over the general record sound when both apply.
-
 ## What is here now
 
 | File | Source |
@@ -35,8 +26,7 @@ new biggest blowout wins over the general record sound when both apply.
 | `fanfare.m4a` | Applause, first 5s of the Epidemic Sound crowd clip |
 | `win-dad.m4a` | Britney Spears, 0:49–0:54 |
 | `win-mom.m4a` | First 5s of `denver.mp3` |
-| `record.m4a` | Epidemic Sound cartoon success fanfare, 3.0s |
-| `blowout.m4a` | Epidemic Sound descending "making fun of" sting, 2.1s |
+| `win-caleb.m4a` | First 5s of "Vernon's Strut", Sven Andersson |
 
 Both are trimmed to 5s, level-matched to the same RMS so neither is jarringly
 louder, and given a 0.4s fade-out (plus a short fade-in on the Britney clip,
