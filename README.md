@@ -5,11 +5,13 @@ scoring-card combinations you have played, plus a full per-game scorepad.
 
 Four pages:
 
-- **Home** — combos played out of 16,807, the Caleb vs Allison record, single-game
-  records with who set them, the best scoring card per animal, and a suggested
-  combination you have never played (with a button that carries it into the scorepad).
+- **Home** — combos played out of 16,807, the Caleb vs Allison record, longest win
+  streaks (overall and head-to-head), single-game records with who set them, the best
+  scoring card per animal, and a suggested combination you have never played (with a
+  button that carries it into the scorepad).
 - **Add game** — the scorecard. Pick the five scoring cards, enter scores, save.
-  Habitat majorities are computed for you. Defaults to Caleb and Allison.
+  Habitat majorities are computed for you. Defaults to Allison and Caleb. Saving a
+  multiplayer game plays a drumroll and announces the winner.
 - **Stats** — every player's record, all single-game highs, the average score for each
   card (all players, or one), the pairing lattice, and card usage.
 - **Log** — every game recorded, newest first. Tap one to see the full sheet.
@@ -23,6 +25,27 @@ pinecones. The labels live in `HABITATS`; the underlying storage keys are unchan
 
 Runs entirely in the browser. No account, no backend. Data lives in `localStorage`
 under the key `cascadia:v1` and never leaves the device.
+
+## Sound
+
+Recording a game with two or more players rolls a drumroll, then announces the winner
+over the scorepad. The game is saved before the announcement appears, so skipping or
+dismissing it never costs you the entry; solo games skip it entirely.
+
+Everything is synthesised at runtime with the Web Audio API in `src/sound.js` — there
+are no audio files, so sound works offline from the first load and the service worker
+has nothing extra to cache. `drumroll()` schedules an accelerating run of noise hits
+over a low rumble; `fanfare()` plays a rising four-note run for a win and a flat pair
+for a tie.
+
+The **Sound on / Sound off** button in the footer is stored under `cascadia:muted`.
+Muted still shows the announcement, just silently. Two things are outside the app's
+control: iOS only starts audio inside a tap (which is why the context is opened in the
+save handler), and iOS Safari honours the hardware silent switch, so a phone on silent
+stays silent.
+
+To retune it: `ROLL_MS` in `src/App.jsx` sets the drumroll length, and the `notes`
+array in `src/sound.js` sets the fanfare.
 
 ## Run locally
 
@@ -88,6 +111,7 @@ games in both.
 | Path | What it holds |
 |---|---|
 | `src/App.jsx` | Everything: domain constants, scoring, coverage math, stats, UI, CSS |
+| `src/sound.js` | Drumroll and fanfare, synthesised — no audio files |
 | `src/store.js` | Storage shim. Swap the two method bodies for IndexedDB or a sync backend |
 | `public/sw.js` | Service worker. Network-first, cache fallback |
 | `public/manifest.webmanifest` | Install metadata |
@@ -97,8 +121,12 @@ games in both.
 - **Card sets.** `CARDS` in `src/App.jsx` is `A`–`G` (base + Landmarks). Add the promo
   card and `TOTAL_COMBOS` recomputes on its own.
 - **Who the regulars are.** `REGULARS` — drives the head-to-head panel, the name
-  colours, and the per-player filter on the stats page.
+  colours, and the per-player filter on the stats page. `SEAT_DEFAULTS` is separate: it
+  is only who lands in which slot when a fresh scorepad opens.
 - **Landscape majority scoring.** `habitatBonus()` — one function, all player counts.
 - **Coverage math.** `buildCoverage()` and `suggestCombo()`.
 - **Stats.** `buildStats()` builds one row per player per game; `recordFor()` picks the
-  record holders and `cardMeans()` does the per-card averages.
+  record holders, `longestStreaks()` finds the longest run of back-to-back wins per
+  person, and `cardMeans()` does the per-card averages. Streaks count outright wins
+  only — a tie ends a run — and follow log order, the same order the current-streak
+  line already uses.

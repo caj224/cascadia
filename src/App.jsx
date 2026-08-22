@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { store } from "./store.js";
+import { drumroll, fanfare, isMuted, setMuted, unlock } from "./sound.js";
 
 /* ------------------------------------------------------------------ */
 /* Domain                                                              */
@@ -135,8 +136,13 @@ function emptyPlayer(name) {
   };
 }
 
+/* Seat order on a fresh scorepad. Separate from REGULARS, which is the
+   identity list everything head-to-head keys off — this is only who lands in
+   which slot when the pad opens. */
+const SEAT_DEFAULTS = ["Allison", "Caleb"];
+
 function defaultPlayers() {
-  return [emptyPlayer("Caleb"), emptyPlayer("Allison")];
+  return SEAT_DEFAULTS.map(emptyPlayer);
 }
 
 function newDraft() {
@@ -275,6 +281,47 @@ function biggestLandscape(p) {
   return best;
 }
 
+/* Longest run of consecutive wins per person, over the games that person
+   actually sat in. Only outright wins extend a run — a tie ends one, which is
+   how ties are treated everywhere else in the win-loss record. Mega C games
+   count, same as they do for wins.
+
+   Rows arrive newest-first, so walk a reversed copy to read runs forwards. */
+function longestStreaks(rows) {
+  const people = new Map();
+  [...rows].reverse().forEach((r) => {
+    if (!people.has(r.key))
+      people.set(r.key, {
+        key: r.key,
+        name: r.name,
+        n: 0,
+        from: null,
+        to: null,
+        run: 0,
+        runFrom: null,
+        live: false,
+      });
+    const p = people.get(r.key);
+    p.name = r.name; // keep the most recent spelling
+    if (r.won) {
+      if (!p.run) p.runFrom = r.date;
+      p.run++;
+      // >= so a fresh run that matches an old one becomes the live holder.
+      if (p.run >= p.n) {
+        p.n = p.run;
+        p.from = p.runFrom;
+        p.to = r.date;
+      }
+    } else {
+      p.run = 0;
+    }
+    p.live = p.run > 0 && p.run === p.n;
+  });
+  return [...people.values()]
+    .filter((p) => p.n > 0)
+    .sort((a, b) => b.n - a.n || String(b.to).localeCompare(String(a.to)));
+}
+
 /* Best row for a metric. Rows arrive newest-first, so a strict > keeps the
    most recent holder of a tied record. */
 function recordFor(rows, get) {
@@ -358,6 +405,18 @@ function buildStats(games) {
     else if (h2h.streak.key !== leaders[0].key) break;
     h2h.streak.n++;
   }
+  /* Longest run inside the head-to-head series alone. */
+  h2h.longest = Object.fromEntries(REGULARS.map((r) => [r.key, 0]));
+  let run = { key: null, n: 0 };
+  [...h2hGames].reverse().forEach(({ seats }) => {
+    const leaders = winnersOf(seats).map((i) => seats[i]);
+    const winner = leaders.length > 1 ? null : leaders[0].key;
+    if (winner && winner === run.key) run.n++;
+    else run = { key: winner, n: winner ? 1 : 0 };
+    if (winner && run.n > h2h.longest[winner]) h2h.longest[winner] = run.n;
+  });
+  h2h.longestLive = run.key && run.n === h2h.longest[run.key] ? run.key : null;
+
   h2h.avg = Object.fromEntries(
     REGULARS.map((r) => [r.key, h2h.scored ? h2h.points[r.key] / h2h.scored : 0])
   );
@@ -391,6 +450,7 @@ function buildStats(games) {
     scored,
     megaCount: games.filter((g) => g.megaC).length,
     records,
+    streaks: longestStreaks(rows),
     h2h,
     people: [...people.values()].sort((a, b) => b.games - a.games),
   };
@@ -496,6 +556,8 @@ export default function CascadiaTracker() {
     setTab("add");
   };
 
+  const [quiet, setQuiet] = useState(isMuted);
+
   const exportJson = () => {
     const blob = new Blob([JSON.stringify({ games }, null, 2)], {
       type: "application/json",
@@ -590,6 +652,18 @@ export default function CascadiaTracker() {
       )}
 
       <footer className="cs-foot">
+        <button
+          className="cs-ghost"
+          aria-pressed={!quiet}
+          onClick={() => {
+            const next = !quiet;
+            setQuiet(next);
+            setMuted(next);
+            if (!next) unlock();
+          }}
+        >
+          {quiet ? "Sound off" : "Sound on"}
+        </button>
         <button className="cs-ghost" onClick={exportJson}>
           Export log
         </button>
@@ -620,6 +694,8 @@ function Home({ games, cov, stats, onPlay, onGo }) {
   const pct = (cov.played.size / TOTAL_COMBOS) * 100;
   const { h2h } = stats;
   const streaker = REGULARS.find((r) => r.key === h2h.streak.key);
+  const best = stats.streaks[0] || null;
+  const bestColour = best && regularFor(best.name) ? regularFor(best.name).color : null;
   const means = useMemo(() => cardMeans(stats.scored, null), [stats.scored]);
 
   return (
@@ -723,6 +799,55 @@ function Home({ games, cov, stats, onPlay, onGo }) {
 
       <section className="cs-panel">
         <div className="cs-panel-head">
+          <h2>Longest win streaks</h2>
+          <p className="cs-legend">Wins back to back. A tie ends a run.</p>
+        </div>
+        <div className="cs-streaks">
+          <div className="cs-streak-main">
+            <span className="cs-streak-label">Overall</span>
+            {best ? (
+              <>
+                <span
+                  className="cs-streak-n mono"
+                  style={bestColour ? { color: bestColour } : undefined}
+                >
+                  {best.n}
+                </span>
+                <span className="cs-streak-who">
+                  <strong style={bestColour ? { color: bestColour } : undefined}>
+                    {displayName(best.name)}
+                  </strong>
+                  <span className="mono">
+                    {" · "}
+                    {best.from === best.to ? best.from : `${best.from} → ${best.to}`}
+                  </span>
+                  {best.live && <em className="cs-streak-live">still going</em>}
+                </span>
+              </>
+            ) : (
+              <span className="cs-streak-who">no wins recorded yet</span>
+            )}
+          </div>
+
+          <div className="cs-streak-h2h">
+            <span className="cs-streak-label">Head to head</span>
+            {REGULARS.map((r) => (
+              <div className="cs-streak-row" key={r.key}>
+                <span className="cs-streak-rname" style={{ color: r.color }}>
+                  {r.label}
+                </span>
+                <span className="mono cs-streak-rn">{h2h.longest[r.key] || "–"}</span>
+                {h2h.longestLive === r.key && h2h.longest[r.key] > 1 && (
+                  <em className="cs-streak-live">live</em>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="cs-panel">
+        <div className="cs-panel-head">
           <h2>Records</h2>
           <button className="cs-ghost sm" onClick={() => onGo("stats")}>
             All stats
@@ -821,6 +946,7 @@ function Record({ label, rec, prefix = "", color, tag }) {
 function LogGame({ cov, draft, setDraft, onSave }) {
   const { date, cards, players, megaC } = draft;
   const [saved, setSaved] = useState(false);
+  const [reveal, setReveal] = useState(null);
 
   const setDate = (v) => setDraft((d) => ({ ...d, date: v }));
   const setCards = (v) => setDraft((d) => ({ ...d, cards: v }));
@@ -838,7 +964,7 @@ function LogGame({ cov, draft, setDraft, onSave }) {
     setPlayers((prev) => {
       const next = prev.slice(0, n);
       while (next.length < n) {
-        const fallback = REGULARS[next.length] ? REGULARS[next.length].label : `Player ${next.length + 1}`;
+        const fallback = SEAT_DEFAULTS[next.length] || `Player ${next.length + 1}`;
         next.push(emptyPlayer(fallback));
       }
       return next;
@@ -849,6 +975,15 @@ function LogGame({ cov, draft, setDraft, onSave }) {
     setPlayers((prev) => prev.map((p, idx) => (idx === i ? fn(p) : p)));
 
   const save = () => {
+    unlock(); // iOS wants the audio context started inside the tap itself
+    const board = scores.map((s, i) => ({
+      name: players[i].name,
+      total: s.total,
+      nature: s.nature,
+    }));
+    const top = leaders.map((i) => board[i]);
+    const best = Math.max(...board.filter((_, i) => !leaders.includes(i)).map((r) => r.total), -Infinity);
+
     onSave({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       date,
@@ -864,10 +999,21 @@ function LogGame({ cov, draft, setDraft, onSave }) {
     setMegaC(false); // classify each game on its own, never by inheritance
     setSaved(true);
     setTimeout(() => setSaved(false), 2200);
+
+    // Solo games have nothing to announce, so they just get the button state.
+    if (board.length > 1)
+      setReveal({
+        winners: top,
+        tie: top.length > 1,
+        margin: Number.isFinite(best) ? top[0].total - best : 0,
+        megaC: !!megaC,
+      });
   };
 
   return (
     <section>
+      {reveal && <WinnerReveal result={reveal} onClose={() => setReveal(null)} />}
+
       <div className="cs-panel">
         <div className="cs-panel-head">
           <h2>Scoring cards in play</h2>
@@ -1041,6 +1187,106 @@ function Field({ label, value, onChange, color, hint }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Winner reveal                                                       */
+/* ------------------------------------------------------------------ */
+
+const ROLL_MS = 2200;
+
+/*
+ * Drumroll, then the result. The game is already saved by the time this
+ * mounts — the overlay is pure theatre and can be tapped away at any point.
+ */
+function WinnerReveal({ result, onClose }) {
+  const [phase, setPhase] = useState("roll");
+  const stopRoll = useRef(null);
+
+  useEffect(() => {
+    stopRoll.current = drumroll(ROLL_MS / 1000);
+    const t = setTimeout(() => {
+      fanfare(result.tie);
+      setPhase("show");
+    }, ROLL_MS);
+    return () => {
+      clearTimeout(t);
+      if (stopRoll.current) stopRoll.current();
+    };
+  }, [result]);
+
+  // Once the name is up, drop the overlay on its own so the pad is usable again.
+  useEffect(() => {
+    if (phase !== "show") return undefined;
+    const t = setTimeout(onClose, 6000);
+    return () => clearTimeout(t);
+  }, [phase, onClose]);
+
+  const skip = () => {
+    if (phase === "show") return onClose();
+    if (stopRoll.current) stopRoll.current();
+    fanfare(result.tie);
+    setPhase("show");
+  };
+
+  const { winners, tie, margin, megaC } = result;
+  const names = winners.map((w) => displayName(w.name) || "Someone");
+  const colour = !tie && regularFor(winners[0].name) ? regularFor(winners[0].name).color : null;
+
+  return (
+    <div
+      className="cs-reveal"
+      role="dialog"
+      aria-live="polite"
+      aria-label="Result"
+      onClick={skip}
+    >
+      <div className={"cs-reveal-card" + (phase === "show" ? " show" : "")}>
+        {phase === "roll" ? (
+          <>
+            <p className="cs-reveal-kicker">Counting it up</p>
+            <div className="cs-roll" aria-hidden="true">
+              {[0, 1, 2].map((i) => (
+                <span key={i} style={{ animationDelay: `${i * 0.12}s` }} />
+              ))}
+            </div>
+            <p className="cs-reveal-skip">tap to skip</p>
+          </>
+        ) : (
+          <>
+            <div className="cs-burst" aria-hidden="true">
+              {Array.from({ length: 12 }, (_, i) => (
+                <span
+                  key={i}
+                  style={{
+                    background: ["#35604A", "#C0A040", "#4E7FA8", "#B4453A"][i % 4],
+                    "--a": `${i * 30}deg`,
+                    animationDelay: `${(i % 4) * 0.04}s`,
+                  }}
+                />
+              ))}
+            </div>
+            <p className="cs-reveal-kicker">{tie ? "Dead heat" : "Winner"}</p>
+            <h2 className="cs-reveal-name" style={colour ? { color: colour } : undefined}>
+              {tie ? names.join(" & ") : names[0]}
+            </h2>
+            <p className="cs-reveal-score mono">{winners[0].total}</p>
+            <p className="cs-reveal-note">
+              {tie
+                ? `level on ${winners[0].total} with the pinecone tiebreak split too`
+                : margin === 0
+                ? "won on the pinecone tiebreak"
+                : `by ${margin} point${margin === 1 ? "" : "s"}`}
+              {megaC ? " · logged as Mega C" : ""}
+            </p>
+            <button className="cs-reveal-done" onClick={onClose}>
+              Done
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Log                                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -1062,7 +1308,7 @@ function GamesList({ games, cov, onDelete }) {
         const winner = g.players[top[0]];
         const best = s[top[0]].total;
         const first = cov.comboCount.get(comboKey(g.cards)) === 1;
-        const reg = top.length > 1 ? null : regularFor(winner.name);
+        const tied = top.length > 1;
         return (
           <div className="cs-game" key={g.id}>
             <button className="cs-game-head" onClick={() => setOpen(open === g.id ? null : g.id)}>
@@ -1076,51 +1322,67 @@ function GamesList({ games, cov, onDelete }) {
               </span>
               {first && <span className="cs-first">first time</span>}
               {g.megaC && <span className="cs-megatag">mega C</span>}
-              <span className="cs-winner" style={reg ? { color: reg.color } : undefined}>
-                {top.length > 1
-                  ? `tied ${best}`
-                  : `${displayName(winner.name)} ${best}`}
+              <span className={"cs-winner" + (tied ? " tied" : "")}>
+                {tied ? `tied ${best}` : `${displayName(winner.name)} ${best}`}
               </span>
             </button>
 
             {open === g.id && (
               <div className="cs-detail">
-                <table className="cs-table mono">
-                  <thead>
-                    <tr>
-                      <th>Player</th>
-                      {ANIMALS.map((a) => (
-                        <th key={a.key} style={{ color: a.color }}>
-                          {a.label.slice(0, 3)}
-                        </th>
-                      ))}
-                      {HABITATS.map((h) => (
-                        <th key={h.key} style={{ color: h.color }}>
-                          {h.label.slice(0, 3)}
-                        </th>
-                      ))}
-                      <th>Maj</th>
-                      <th>Pine</th>
-                      <th>Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {g.players.map((p, i) => (
-                      <tr key={i}>
-                        <td className="cs-td-name">{p.name}</td>
+                <div className="cs-detail-totals">
+                  {g.players.map((p, i) => (
+                    <div
+                      className={"cs-dt" + (top.includes(i) ? " win" : "")}
+                      key={i}
+                    >
+                      <span className="cs-dt-name">{displayName(p.name)}</span>
+                      <span className="cs-dt-total mono">{s[i].total}</span>
+                      <span className="cs-dt-break mono">
+                        {s[i].wildlife} wildlife · {s[i].landscape} maps ·{" "}
+                        {s[i].bonus} maj · {s[i].nature} pine
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="cs-table-wrap">
+                  <table className="cs-table mono">
+                    <thead>
+                      <tr>
+                        <th>Player</th>
                         {ANIMALS.map((a) => (
-                          <td key={a.key}>{num(p.wildlife[a.key])}</td>
+                          <th key={a.key} style={{ color: a.color }}>
+                            {a.label.slice(0, 3)}
+                          </th>
                         ))}
                         {HABITATS.map((h) => (
-                          <td key={h.key}>{num(p.habitat[h.key])}</td>
+                          <th key={h.key} style={{ color: h.color }}>
+                            {h.label.slice(0, 3)}
+                          </th>
                         ))}
-                        <td>{s[i].bonus}</td>
-                        <td>{s[i].nature}</td>
-                        <td className="cs-td-total">{s[i].total}</td>
+                        <th>Maj</th>
+                        <th>Pine</th>
+                        <th>Total</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {g.players.map((p, i) => (
+                        <tr key={i}>
+                          <td className="cs-td-name">{p.name}</td>
+                          {ANIMALS.map((a) => (
+                            <td key={a.key}>{num(p.wildlife[a.key])}</td>
+                          ))}
+                          {HABITATS.map((h) => (
+                            <td key={h.key}>{num(p.habitat[h.key])}</td>
+                          ))}
+                          <td>{s[i].bonus}</td>
+                          <td>{s[i].nature}</td>
+                          <td className="cs-td-total">{s[i].total}</td>
+                        </tr>
+                      ))}
+                      </tbody>
+                  </table>
+                </div>
                 <button className="cs-ghost sm danger" onClick={() => onDelete(g.id)}>
                   Delete this game
                 </button>
@@ -1490,6 +1752,50 @@ const CSS = `
 .cs-tail .cs-field { width: 120px; }
 .cs-break { font-size: 11px; color: var(--ink-2); margin: 0 0 6px; }
 
+/* Longest win streaks */
+.cs-streaks { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; align-items: stretch; }
+.cs-streak-main { display: flex; flex-direction: column; gap: 2px; background: var(--paper); border-radius: 10px; padding: 14px 16px; }
+.cs-streak-label { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 600; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); }
+.cs-streak-n { font-size: 40px; font-weight: 600; line-height: 1.05; }
+.cs-streak-who { font-size: 13px; color: var(--ink-2); }
+.cs-streak-who strong { font-size: 14px; color: var(--ink); }
+.cs-streak-live { font-style: normal; font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; background: #35604A; color: #fff; border-radius: 4px; padding: 2px 5px; margin-left: 6px; }
+.cs-streak-h2h { display: flex; flex-direction: column; gap: 4px; background: var(--paper); border-radius: 10px; padding: 14px 16px; }
+.cs-streak-row { display: flex; align-items: baseline; gap: 8px; }
+.cs-streak-rname { font-weight: 600; font-size: 14px; flex: 1; }
+.cs-streak-rn { font-size: 20px; font-weight: 600; }
+
+@media (max-width: 620px) {
+  .cs-streaks { grid-template-columns: 1fr; }
+}
+
+/* Winner reveal */
+.cs-reveal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(12, 18, 15, 0.72); backdrop-filter: blur(3px); animation: cs-fade 180ms ease-out; cursor: pointer; }
+.cs-reveal-card { position: relative; width: 100%; max-width: 380px; text-align: center; background: var(--card); border-radius: 14px; padding: 30px 24px 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32); }
+.cs-reveal-card.show { animation: cs-pop 420ms cubic-bezier(0.2, 1.5, 0.4, 1); }
+.cs-reveal-kicker { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 600; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-2); margin: 0; }
+.cs-reveal-name { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 800; font-size: 40px; letter-spacing: -0.03em; line-height: 1.05; margin: 8px 0 2px; overflow-wrap: anywhere; }
+.cs-reveal-score { font-size: 30px; font-weight: 600; margin: 0; }
+.cs-reveal-note { font-size: 13px; color: var(--ink-2); margin: 6px 0 0; }
+.cs-reveal-skip { font-size: 12px; color: var(--ink-2); margin: 18px 0 0; }
+.cs-reveal-done { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 13px; margin-top: 18px; background: var(--ink); color: #fff; border: none; border-radius: 8px; padding: 10px 22px; cursor: pointer; }
+
+.cs-roll { display: flex; gap: 8px; justify-content: center; margin: 22px 0 4px; }
+.cs-roll span { width: 11px; height: 11px; border-radius: 50%; background: var(--ink); animation: cs-roll 620ms ease-in-out infinite; }
+
+.cs-burst { position: absolute; inset: 0; overflow: hidden; border-radius: 14px; pointer-events: none; }
+.cs-burst span { position: absolute; top: 50%; left: 50%; width: 9px; height: 10px; margin: -5px 0 0 -4px; clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); animation: cs-burst 900ms ease-out forwards; }
+
+@keyframes cs-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cs-pop { 0% { transform: scale(0.86); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+@keyframes cs-roll { 0%, 100% { transform: translateY(0); opacity: 0.35; } 50% { transform: translateY(-9px); opacity: 1; } }
+@keyframes cs-burst { 0% { transform: rotate(var(--a, 0deg)) translateY(0) scale(1); opacity: 1; } 100% { transform: rotate(var(--a, 0deg)) translateY(-160px) scale(0.5); opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .cs-reveal, .cs-reveal-card.show, .cs-roll span, .cs-burst span { animation-duration: 1ms; animation-iteration-count: 1; }
+  .cs-burst { display: none; }
+}
+
 .cs-save { width: 100%; margin-top: 14px; font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 14px; background: var(--ink); color: #fff; border: none; border-radius: 8px; padding: 12px; cursor: pointer; }
 .cs-save:hover { background: #35604A; }
 
@@ -1501,13 +1807,25 @@ const CSS = `
 .cs-chips { display: flex; gap: 3px; }
 .cs-chip { width: 20px; height: 20px; border-radius: 4px; color: #fff; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
 .cs-first { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #35604A; border: 1px solid #A9C4B4; border-radius: 20px; padding: 2px 7px; }
-.cs-winner { margin-left: auto; font-size: 13px; font-weight: 600; }
+.cs-winner { margin-left: auto; font-size: 13px; font-weight: 600; color: #35604A; }
+.cs-winner.tied { color: var(--ink-2); }
 
-.cs-detail { padding: 4px 0 14px; overflow-x: auto; }
+.cs-detail { padding: 4px 0 14px; }
+/* The per-player table is 14 columns wide, so it gets its own scroller and the
+   totals sit above it where they read without scrolling anything. */
+.cs-detail-totals { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
+.cs-dt { flex: 1 1 160px; background: var(--paper); border-radius: 8px; padding: 8px 10px; border-left: 3px solid transparent; }
+.cs-dt.win { border-left-color: #35604A; }
+.cs-dt-name { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.cs-dt.win .cs-dt-name { color: #35604A; }
+.cs-dt-total { display: block; font-size: 24px; font-weight: 600; line-height: 1.15; }
+.cs-dt-break { display: block; font-size: 10px; color: var(--ink-2); }
+.cs-table-wrap { overflow-x: auto; }
 .cs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .cs-table th { text-align: right; font-weight: 500; color: var(--ink-2); padding: 4px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
 .cs-table td { text-align: right; padding: 4px 6px; border-top: 1px solid var(--line); }
-.cs-td-name { text-align: left !important; font-weight: 600; }
+.cs-td-name { text-align: left !important; font-weight: 600; position: sticky; left: 0; background: var(--card); }
+.cs-table th:first-child { position: sticky; left: 0; background: var(--card); text-align: left; }
 .cs-td-total { font-weight: 600; font-size: 14px; }
 .cs-td-none { color: #C3CBC2; }
 .cs-td-best { background: #E7F0E7; color: #24503A; font-weight: 600; border-radius: 4px; }
