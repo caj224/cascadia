@@ -1248,8 +1248,6 @@ function Field({ label, value, onChange, color, hint }) {
 /* Winner reveal                                                       */
 /* ------------------------------------------------------------------ */
 
-const ROLL_MS = 2200;
-
 /*
  * Drumroll, then the result. The game is already saved by the time this
  * mounts — the overlay is pure theatre and can be tapped away at any point.
@@ -1259,11 +1257,14 @@ function WinnerReveal({ result, onClose }) {
   const stopRoll = useRef(null);
 
   useEffect(() => {
-    stopRoll.current = drumroll(ROLL_MS / 1000);
+    // A custom drumroll file sets its own length, so the reveal waits on the
+    // roll rather than on a fixed number.
+    const roll = drumroll();
+    stopRoll.current = roll.stop;
     const t = setTimeout(() => {
       fanfare(result.tie);
       setPhase("show");
-    }, ROLL_MS);
+    }, roll.seconds * 1000);
     return () => {
       clearTimeout(t);
       if (stopRoll.current) stopRoll.current();

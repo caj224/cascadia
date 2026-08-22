@@ -8,6 +8,42 @@
 
 const MUTE_KEY = "cascadia:muted";
 
+/*
+ * Custom audio, optional.
+ *
+ * Any file dropped into src/sounds/ is picked up at build time — there is no
+ * registration step and no manifest to keep in sync. The basename is the role:
+ *
+ *   drumroll.*   the roll that plays while the result is hidden
+ *   fanfare.*    the win
+ *   tie.*        the tie (optional — the fanfare file covers it)
+ *
+ * mp3, m4a, aac, wav, ogg and flac all work. Anything missing, undecodable, or
+ * blocked falls back to the synthesised versions further down, so a bad asset
+ * can never leave the app silent.
+ */
+const FILES = import.meta.glob("./sounds/*.{mp3,m4a,aac,wav,ogg,flac}", {
+  eager: true,
+  query: "?url",
+  import: "default",
+});
+
+const SAMPLE_URL = {};
+for (const path in FILES) {
+  const role = path.split("/").pop().replace(/\.[^.]+$/, "").toLowerCase();
+  SAMPLE_URL[role] = FILES[path];
+}
+const HAS_FILES = Object.keys(SAMPLE_URL).length > 0;
+
+const samples = {}; // role -> AudioBuffer, once decoded
+let loading = null;
+
+/* A drumroll file sets the length of the reveal, but not without limit — a
+   file left long by accident should not strand anyone on the roll screen. */
+const ROLL_SECONDS = 2.2;
+const MAX_ROLL_SECONDS = 6;
+const SAMPLE_GAIN = 0.9;
+
 let ctx = null;
 let noise = null;
 let kicked = false;
@@ -34,17 +70,60 @@ export function setMuted(v) {
   if (muted && ctx) ctx.suspend();
 }
 
-/* iOS only starts audio inside a user gesture, so every play path runs through
-   here and every play path is reached from a tap. */
-function audio() {
-  if (muted) return null;
+/* The context alone, without resuming it. decodeAudioData works on a suspended
+   context, so samples can be decoded long before the first tap. */
+function ensureCtx() {
   if (!ctx) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
     ctx = new AC();
   }
-  if (ctx.state === "suspended") ctx.resume();
   return ctx;
+}
+
+/* iOS only starts audio inside a user gesture, so every play path runs through
+   here and every play path is reached from a tap. */
+function audio() {
+  if (muted) return null;
+  const ac = ensureCtx();
+  if (!ac) return null;
+  if (ac.state === "suspended") ac.resume();
+  return ac;
+}
+
+/* Fetch and decode whatever is in src/sounds/. Runs at import time so the
+   files are ready — and cached by the service worker — before the first game
+   is ever recorded. Failures are swallowed: the synth is always there. */
+function preload() {
+  if (loading || !HAS_FILES) return loading;
+  const ac = ensureCtx();
+  if (!ac) return null;
+  loading = Promise.all(
+    Object.keys(SAMPLE_URL).map((role) =>
+      fetch(SAMPLE_URL[role])
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))))
+        .then((b) => ac.decodeAudioData(b))
+        .then((buf) => {
+          samples[role] = buf;
+        })
+        .catch(() => {}) // stay on the synthesised fallback for this role
+    )
+  );
+  return loading;
+}
+preload();
+
+function playSample(ac, role, at, limit) {
+  const buf = samples[role];
+  if (!buf) return null;
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const g = ac.createGain();
+  g.gain.value = SAMPLE_GAIN;
+  src.connect(g).connect(ac.destination);
+  src.start(at);
+  if (limit) src.stop(at + limit);
+  return src;
 }
 
 /*
@@ -122,9 +201,27 @@ function tone(ac, at, freq, dur, gain, type = "triangle") {
  * swelling as they go, with a low rumble underneath. Returns a stop() so the
  * reveal can cut it short when someone taps to skip.
  */
-export function drumroll(seconds = 2.2) {
+export function drumroll(seconds = ROLL_SECONDS) {
   const ac = audio();
-  if (!ac) return () => {};
+  if (!ac) return { stop: () => {}, seconds };
+
+  /* A supplied file replaces the synth outright, and its own duration drives
+     how long the reveal stays hidden. */
+  if (samples.drumroll) {
+    const length = Math.min(samples.drumroll.duration, MAX_ROLL_SECONDS);
+    const src = playSample(ac, "drumroll", ac.currentTime + 0.02, length);
+    return {
+      seconds: length,
+      stop: () => {
+        try {
+          if (src) src.stop();
+        } catch (err) {
+          /* already stopped */
+        }
+      },
+    };
+  }
+
   const start = ac.currentTime + 0.06;
   const nodes = [];
 
@@ -155,14 +252,17 @@ export function drumroll(seconds = 2.2) {
     i++;
   }
 
-  return () =>
-    nodes.forEach((n) => {
-      try {
-        n.stop();
-      } catch (err) {
-        /* already stopped */
-      }
-    });
+  return {
+    seconds,
+    stop: () =>
+      nodes.forEach((n) => {
+        try {
+          n.stop();
+        } catch (err) {
+          /* already stopped */
+        }
+      }),
+  };
 }
 
 /* The payoff. A win gets a rising fanfare, a tie gets a flat two-note shrug. */
@@ -170,6 +270,15 @@ export function fanfare(tie = false) {
   const ac = audio();
   if (!ac) return;
   const at = ac.currentTime + 0.02;
+
+  // A tie uses tie.* when it exists, otherwise the win file rather than a
+  // synth shrug, so a custom set never sounds half-applied.
+  const role = tie && samples.tie ? "tie" : "fanfare";
+  if (samples[role]) {
+    playSample(ac, role, at);
+    return;
+  }
+
   hit(ac, at, { gain: 0.45, freq: 4800, q: 0.3, decay: 1.5, type: "highpass" });
 
   if (tie) {

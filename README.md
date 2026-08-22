@@ -44,8 +44,20 @@ control: iOS only starts audio inside a tap (which is why the context is opened 
 save handler), and iOS Safari honours the hardware silent switch, so a phone on silent
 stays silent.
 
-To retune it: `ROLL_MS` in `src/App.jsx` sets the drumroll length, and the `notes`
-array in `src/sound.js` sets the fanfare.
+To retune the synthesised versions: the `notes` array in `src/sound.js` sets the
+fanfare, and `ROLL_SECONDS` in the same file sets the roll length.
+
+### Using your own recordings
+
+Drop audio files into `src/sounds/` and they replace the synth. The filename is the
+role — `drumroll.*`, `fanfare.*`, and optionally `tie.*` — and `mp3`, `m4a`, `aac`,
+`wav`, `ogg` and `flac` all work. Nothing to register: the build picks up whatever is
+in the folder.
+
+Anything you leave out keeps its synthesised version, and a file that is missing or
+will not decode falls back to the synth rather than playing nothing. A `drumroll.*`
+file also sets how long the reveal stays hidden, capped at six seconds. See
+`src/sounds/README.md`.
 
 ## Run locally
 
@@ -111,7 +123,8 @@ games in both.
 | Path | What it holds |
 |---|---|
 | `src/App.jsx` | Everything: domain constants, scoring, coverage math, stats, UI, CSS |
-| `src/sound.js` | Drumroll and fanfare, synthesised — no audio files |
+| `src/sound.js` | Drumroll and fanfare: your files if present, synthesised if not |
+| `src/sounds/` | Drop-in audio files. Empty by default |
 | `src/store.js` | Storage shim. Swap the two method bodies for IndexedDB or a sync backend |
 | `public/sw.js` | Service worker. Network-first, cache fallback |
 | `public/manifest.webmanifest` | Install metadata |
