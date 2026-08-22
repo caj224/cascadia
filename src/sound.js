@@ -18,6 +18,8 @@ const MUTE_KEY = "cascadia:muted";
  *   fanfare.*    any win, unless the winner has their own file
  *   win-<name>.* that person's win — win-dad.* plays when Dad wins
  *   tie.*        the tie (optional — the fanfare file covers it)
+ *   blowout.*    a new biggest-blowout record, played after the win sound
+ *   record.*     any other new record, played after the win sound
  *
  * The name in win-<name>.* is matched the way names are matched everywhere
  * else: trimmed and lower-cased, so win-dad.* covers "Dad" and "dad".
@@ -45,6 +47,7 @@ let loading = null;
 /* A drumroll file sets the length of the reveal, but not without limit — a
    file left long by accident should not strand anyone on the roll screen. */
 const ROLL_SECONDS = 2.2;
+const SYNTH_FANFARE_SECONDS = 1.3;
 const MAX_ROLL_SECONDS = 6;
 const SAMPLE_GAIN = 0.9;
 
@@ -127,7 +130,30 @@ function playSample(ac, role, at, limit) {
   src.connect(g).connect(ac.destination);
   src.start(at);
   if (limit) src.stop(at + limit);
-  return src;
+  return { src, gain: g };
+}
+
+/* The win sounds run five seconds. Closing the reveal should take the sound
+   with it rather than leaving applause playing over the scorepad — faded, not
+   cut, so it does not click. */
+let playing = [];
+
+export function hushFanfare(seconds = 0.18) {
+  const nodes = playing;
+  playing = [];
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  nodes.forEach((node) => {
+    if (!node) return;
+    try {
+      node.gain.gain.cancelScheduledValues(t);
+      node.gain.gain.setValueAtTime(node.gain.gain.value, t);
+      node.gain.gain.linearRampToValueAtTime(0.0001, t + seconds);
+      node.src.stop(t + seconds);
+    } catch (err) {
+      /* already finished */
+    }
+  });
 }
 
 /*
@@ -213,12 +239,12 @@ export function drumroll(seconds = ROLL_SECONDS) {
      how long the reveal stays hidden. */
   if (samples.drumroll) {
     const length = Math.min(samples.drumroll.duration, MAX_ROLL_SECONDS);
-    const src = playSample(ac, "drumroll", ac.currentTime + 0.02, length);
+    const node = playSample(ac, "drumroll", ac.currentTime + 0.02, length);
     return {
       seconds: length,
       stop: () => {
         try {
-          if (src) src.stop();
+          if (node) node.src.stop();
         } catch (err) {
           /* already stopped */
         }
@@ -270,18 +296,34 @@ export function drumroll(seconds = ROLL_SECONDS) {
 }
 
 /* The payoff. A win gets a rising fanfare, a tie gets a flat two-note shrug. */
-export function fanfare(tie = false, winner = "") {
+/*
+ * `sting` names a second clip — "blowout" or "record" — that follows the win
+ * sound rather than fighting it. Both are scheduled on the audio clock in one
+ * go, so hushFanfare() takes the pending one with it when the reveal closes.
+ */
+export function fanfare(tie = false, winner = "", sting = null) {
   const ac = audio();
   if (!ac) return;
   const at = ac.currentTime + 0.02;
+  hushFanfare(0.05); // never stack two results on a fast second save
 
   /* Most specific first: this winner's own file, then the tie file, then the
      general one. A tie never uses somebody's personal win sound. */
   const order = tie ? ["tie", "fanfare"] : [`win-${winner}`, "fanfare"];
   const role = order.find((r) => samples[r]);
+
   if (role) {
-    playSample(ac, role, at);
+    const node = playSample(ac, role, at);
+    playing = [node];
+    // A touch of overlap so the sting lands on the tail, not after a gap.
+    if (sting && samples[sting])
+      playing.push(playSample(ac, sting, at + Math.max(0.4, samples[role].duration - 0.35)));
     return;
+  }
+
+  // No win file: the sting still gets its moment, after the synth flourish.
+  if (sting && samples[sting]) {
+    playing = [playSample(ac, sting, at + SYNTH_FANFARE_SECONDS)];
   }
 
   hit(ac, at, { gain: 0.45, freq: 4800, q: 0.3, decay: 1.5, type: "highpass" });
