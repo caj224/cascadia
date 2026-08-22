@@ -8,8 +8,27 @@ The **filename is the role**:
 | File | When it plays |
 |---|---|
 | `drumroll.*` | While the result is still hidden |
-| `fanfare.*` | The winner is revealed |
+| `fanfare.*` | Any win, unless the winner has their own file |
+| `win-<name>.*` | That person wins — `win-dad.*` plays when Dad wins |
 | `tie.*` | A tie is revealed — optional, `fanfare.*` covers it |
+
+The name in `win-<name>.*` is matched the way names are matched everywhere else
+in the app: trimmed and lower-cased. `win-dad.m4a` covers "Dad", "dad" and
+"  DAD  ". Adding a personal sound for someone is just dropping in one more
+file — no code change, no list to update.
+
+A tie never uses a personal win sound, only `tie.*` or `fanfare.*`.
+
+## What is here now
+
+| File | Source |
+|---|---|
+| `fanfare.m4a` | Applause, first 5s of the Epidemic Sound crowd clip |
+| `win-dad.m4a` | Britney Spears, 0:49–0:54 |
+
+Both are trimmed to 5s, level-matched to the same RMS so neither is jarringly
+louder, and given a 0.4s fade-out (plus a short fade-in on the Britney clip,
+which starts mid-song) so they do not end on a hard cut.
 
 `mp3`, `m4a`, `aac`, `wav`, `ogg` and `flac` all work. `mp3` or `m4a` keep the
 download small; a 300KB wav is fine too but is pure bloat next to a 30KB mp3.

@@ -15,8 +15,12 @@ const MUTE_KEY = "cascadia:muted";
  * registration step and no manifest to keep in sync. The basename is the role:
  *
  *   drumroll.*   the roll that plays while the result is hidden
- *   fanfare.*    the win
+ *   fanfare.*    any win, unless the winner has their own file
+ *   win-<name>.* that person's win — win-dad.* plays when Dad wins
  *   tie.*        the tie (optional — the fanfare file covers it)
+ *
+ * The name in win-<name>.* is matched the way names are matched everywhere
+ * else: trimmed and lower-cased, so win-dad.* covers "Dad" and "dad".
  *
  * mp3, m4a, aac, wav, ogg and flac all work. Anything missing, undecodable, or
  * blocked falls back to the synthesised versions further down, so a bad asset
@@ -266,15 +270,16 @@ export function drumroll(seconds = ROLL_SECONDS) {
 }
 
 /* The payoff. A win gets a rising fanfare, a tie gets a flat two-note shrug. */
-export function fanfare(tie = false) {
+export function fanfare(tie = false, winner = "") {
   const ac = audio();
   if (!ac) return;
   const at = ac.currentTime + 0.02;
 
-  // A tie uses tie.* when it exists, otherwise the win file rather than a
-  // synth shrug, so a custom set never sounds half-applied.
-  const role = tie && samples.tie ? "tie" : "fanfare";
-  if (samples[role]) {
+  /* Most specific first: this winner's own file, then the tie file, then the
+     general one. A tie never uses somebody's personal win sound. */
+  const order = tie ? ["tie", "fanfare"] : [`win-${winner}`, "fanfare"];
+  const role = order.find((r) => samples[r]);
+  if (role) {
     playSample(ac, role, at);
     return;
   }

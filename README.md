@@ -50,9 +50,12 @@ fanfare, and `ROLL_SECONDS` in the same file sets the roll length.
 ### Using your own recordings
 
 Drop audio files into `src/sounds/` and they replace the synth. The filename is the
-role — `drumroll.*`, `fanfare.*`, and optionally `tie.*` — and `mp3`, `m4a`, `aac`,
-`wav`, `ogg` and `flac` all work. Nothing to register: the build picks up whatever is
-in the folder.
+role — `drumroll.*`, `fanfare.*`, `win-<name>.*` for one person's win, and optionally
+`tie.*` — and `mp3`, `m4a`, `aac`, `wav`, `ogg` and `flac` all work. Nothing to
+register: the build picks up whatever is in the folder, so giving somebody their own
+win sound is just adding `win-<their-name>.m4a`.
+
+Today a win plays applause, except a win by Dad, which plays a Britney Spears clip.
 
 Anything you leave out keeps its synthesised version, and a file that is missing or
 will not decode falls back to the synth rather than playing nothing. A `drumroll.*`

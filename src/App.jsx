@@ -1063,6 +1063,7 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
         winners: board.filter((r) => r.won || r.tied),
         tie: board.filter((r) => r.tied).length > 1,
         margin: beaten ? board[0].total - beaten.total : 0,
+        winnerKey: nameKey(board[0].name),
         megaC: !!megaC,
         broken,
       });
@@ -1262,7 +1263,7 @@ function WinnerReveal({ result, onClose }) {
     const roll = drumroll();
     stopRoll.current = roll.stop;
     const t = setTimeout(() => {
-      fanfare(result.tie);
+      fanfare(result.tie, result.winnerKey);
       setPhase("show");
     }, roll.seconds * 1000);
     return () => {
@@ -1274,7 +1275,7 @@ function WinnerReveal({ result, onClose }) {
   const skip = () => {
     if (phase === "show") return onClose();
     if (stopRoll.current) stopRoll.current();
-    fanfare(result.tie);
+    fanfare(result.tie, result.winnerKey);
     setPhase("show");
   };
 
