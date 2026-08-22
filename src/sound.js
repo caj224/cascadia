@@ -10,6 +10,7 @@ const MUTE_KEY = "cascadia:muted";
 
 let ctx = null;
 let noise = null;
+let kicked = false;
 
 function readMuted() {
   try {
@@ -46,7 +47,33 @@ function audio() {
   return ctx;
 }
 
-export const unlock = () => void audio();
+/*
+ * Call from inside a tap before anything is scheduled.
+ *
+ * resume() alone is not always enough on iOS — the context reports "running"
+ * but stays silent until a buffer has actually been played inside a gesture.
+ * Starting a one-sample silent buffer here is the standard way to force it.
+ */
+export function unlock() {
+  const ac = audio();
+  if (!ac || kicked) return;
+  const src = ac.createBufferSource();
+  src.buffer = ac.createBuffer(1, 1, 22050);
+  src.connect(ac.destination);
+  src.start(0);
+  kicked = true;
+}
+
+/* Whether audio is actually able to play, for the UI to warn about. */
+export const audioBlocked = () =>
+  !muted && !!ctx && ctx.state !== "running";
+
+/* Short confirmation blip, so the sound toggle proves itself out loud. */
+export function blip() {
+  const ac = audio();
+  if (!ac) return;
+  tone(ac, ac.currentTime + 0.01, 880, 0.16, 0.18);
+}
 
 /* One second of white noise, shared by every drum hit and the crash. */
 function noiseBuffer(ac) {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { store } from "./store.js";
-import { drumroll, fanfare, isMuted, setMuted, unlock } from "./sound.js";
+import { audioBlocked, blip, drumroll, fanfare, isMuted, setMuted, unlock } from "./sound.js";
 
 /* ------------------------------------------------------------------ */
 /* Domain                                                              */
@@ -333,6 +333,45 @@ function recordFor(rows, get) {
   return best;
 }
 
+/* The all-time records the reveal can announce, in the order it lists them.
+   Labels match the Records panel on Home so the two never disagree. */
+const RECORD_FIELDS = [
+  { key: "total", label: "Highest score", get: (r) => r.total },
+  { key: "wildlife", label: "Highest wildlife", get: (r) => r.wildlife },
+  { key: "landscape", label: "Highest total maps", get: (r) => r.landscape },
+  { key: "landscapeTotal", label: "Highest maps + bonuses", get: (r) => r.landscapeTotal },
+  { key: "single", label: "Biggest single landscape", get: (r) => r.biggest.size },
+  { key: "nature", label: "Most pinecones", get: (r) => r.nature },
+];
+
+/* Which records a just-finished game took. `records` is the pre-save picture,
+   which is what save() still holds when it calls this. A Mega C game is left
+   out of every score record, so it can never break one. */
+function recordsBroken(rows, records) {
+  if (!rows.length || rows[0].megaC) return [];
+  const out = [];
+
+  RECORD_FIELDS.forEach((f) => {
+    let row = null;
+    rows.forEach((r) => {
+      if (row === null || f.get(r) > f.get(row)) row = r;
+    });
+    const value = f.get(row);
+    const prev = records[f.key] ? records[f.key].value : null;
+    if (value > 0 && (prev === null || value > prev))
+      out.push({ label: f.label, value, prev, name: row.name });
+  });
+
+  // The blowout record only exists for a game somebody actually won.
+  const won = rows.find((r) => r.won && r.players > 1);
+  if (won) {
+    const prev = records.margin ? records.margin.value : null;
+    if (won.margin > 0 && (prev === null || won.margin > prev))
+      out.push({ label: "Biggest blowout", value: won.margin, prev, name: won.name, prefix: "+" });
+  }
+  return out;
+}
+
 function buildStats(games) {
   const rows = buildRows(games);
   /* Mega C games still count for wins and for combo coverage, but every
@@ -637,6 +676,7 @@ export default function CascadiaTracker() {
       ) : tab === "add" ? (
         <LogGame
           cov={cov}
+          stats={stats}
           draft={draft}
           setDraft={setDraft}
           onSave={(g) => persist([g, ...games])}
@@ -659,7 +699,12 @@ export default function CascadiaTracker() {
             const next = !quiet;
             setQuiet(next);
             setMuted(next);
-            if (!next) unlock();
+            // Switching sound on plays a blip, so the button proves out loud
+            // that audio actually works on this device.
+            if (!next) {
+              unlock();
+              blip();
+            }
           }}
         >
           {quiet ? "Sound off" : "Sound on"}
@@ -943,7 +988,7 @@ function Record({ label, rec, prefix = "", color, tag }) {
 /* Add game                                                            */
 /* ------------------------------------------------------------------ */
 
-function LogGame({ cov, draft, setDraft, onSave }) {
+function LogGame({ cov, stats, draft, setDraft, onSave }) {
   const { date, cards, players, megaC } = draft;
   const [saved, setSaved] = useState(false);
   const [reveal, setReveal] = useState(null);
@@ -976,15 +1021,8 @@ function LogGame({ cov, draft, setDraft, onSave }) {
 
   const save = () => {
     unlock(); // iOS wants the audio context started inside the tap itself
-    const board = scores.map((s, i) => ({
-      name: players[i].name,
-      total: s.total,
-      nature: s.nature,
-    }));
-    const top = leaders.map((i) => board[i]);
-    const best = Math.max(...board.filter((_, i) => !leaders.includes(i)).map((r) => r.total), -Infinity);
 
-    onSave({
+    const game = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       date,
       megaC: !!megaC,
@@ -994,7 +1032,25 @@ function LogGame({ cov, draft, setDraft, onSave }) {
         wildlife: { ...p.wildlife },
         habitat: { ...p.habitat },
       })),
-    });
+    };
+
+    /* Scored the same way the log and the stats page score it, so the reveal
+       can never disagree with what the game looks like once it is saved. */
+    const rows = buildRows([game]);
+    const board = rows
+      .map((r, i) => ({
+        name: r.name,
+        total: r.total,
+        nature: r.nature,
+        won: r.won,
+        tied: r.tied,
+        seat: i,
+      }))
+      .sort((a, b) => b.total - a.total || b.nature - a.nature);
+    const broken = recordsBroken(rows, stats.records);
+    const beaten = board.find((r) => !r.won && !r.tied);
+
+    onSave(game);
     setPlayers((prev) => prev.map((p) => emptyPlayer(p.name)));
     setMegaC(false); // classify each game on its own, never by inheritance
     setSaved(true);
@@ -1003,10 +1059,12 @@ function LogGame({ cov, draft, setDraft, onSave }) {
     // Solo games have nothing to announce, so they just get the button state.
     if (board.length > 1)
       setReveal({
-        winners: top,
-        tie: top.length > 1,
-        margin: Number.isFinite(best) ? top[0].total - best : 0,
+        board,
+        winners: board.filter((r) => r.won || r.tied),
+        tie: board.filter((r) => r.tied).length > 1,
+        margin: beaten ? board[0].total - beaten.total : 0,
         megaC: !!megaC,
+        broken,
       });
   };
 
@@ -1212,13 +1270,6 @@ function WinnerReveal({ result, onClose }) {
     };
   }, [result]);
 
-  // Once the name is up, drop the overlay on its own so the pad is usable again.
-  useEffect(() => {
-    if (phase !== "show") return undefined;
-    const t = setTimeout(onClose, 6000);
-    return () => clearTimeout(t);
-  }, [phase, onClose]);
-
   const skip = () => {
     if (phase === "show") return onClose();
     if (stopRoll.current) stopRoll.current();
@@ -1226,7 +1277,7 @@ function WinnerReveal({ result, onClose }) {
     setPhase("show");
   };
 
-  const { winners, tie, margin, megaC } = result;
+  const { board, winners, tie, margin, megaC, broken } = result;
   const names = winners.map((w) => displayName(w.name) || "Someone");
   const colour = !tie && regularFor(winners[0].name) ? regularFor(winners[0].name).color : null;
 
@@ -1238,7 +1289,10 @@ function WinnerReveal({ result, onClose }) {
       aria-label="Result"
       onClick={skip}
     >
-      <div className={"cs-reveal-card" + (phase === "show" ? " show" : "")}>
+      <div
+        className={"cs-reveal-card" + (phase === "show" ? " show" : "")}
+        onClick={(e) => (phase === "show" ? e.stopPropagation() : skip())}
+      >
         {phase === "roll" ? (
           <>
             <p className="cs-reveal-kicker">Counting it up</p>
@@ -1263,19 +1317,61 @@ function WinnerReveal({ result, onClose }) {
                 />
               ))}
             </div>
+
             <p className="cs-reveal-kicker">{tie ? "Dead heat" : "Winner"}</p>
             <h2 className="cs-reveal-name" style={colour ? { color: colour } : undefined}>
               {tie ? names.join(" & ") : names[0]}
             </h2>
-            <p className="cs-reveal-score mono">{winners[0].total}</p>
             <p className="cs-reveal-note">
               {tie
-                ? `level on ${winners[0].total} with the pinecone tiebreak split too`
+                ? `level on ${winners[0].total}, pinecones split too`
                 : margin === 0
                 ? "won on the pinecone tiebreak"
                 : `by ${margin} point${margin === 1 ? "" : "s"}`}
-              {megaC ? " · logged as Mega C" : ""}
+              {megaC ? " · Mega C" : ""}
             </p>
+
+            {/* Everyone, best first, so the reveal doubles as the final table. */}
+            <ol className="cs-reveal-board">
+              {board.map((r, i) => (
+                <li
+                  key={r.seat}
+                  className={"cs-rb" + (r.won || r.tied ? " win" : "")}
+                >
+                  <span className="cs-rb-pos mono">{r.won || r.tied ? "★" : i + 1}</span>
+                  <span className="cs-rb-name">{displayName(r.name) || `Player ${r.seat + 1}`}</span>
+                  <span className="cs-rb-total mono">{r.total}</span>
+                </li>
+              ))}
+            </ol>
+
+            {broken.length > 0 && (
+              <div className="cs-reveal-recs">
+                <p className="cs-reveal-kicker">
+                  {broken.length === 1 ? "Record broken" : `${broken.length} records broken`}
+                </p>
+                {broken.map((b) => (
+                  <div className="cs-rr" key={b.label}>
+                    <span className="cs-rr-label">{b.label}</span>
+                    <span className="cs-rr-value mono">
+                      {b.prefix || ""}
+                      {b.value}
+                    </span>
+                    <span className="cs-rr-meta">
+                      {displayName(b.name)}
+                      {b.prev !== null ? ` · past ${b.prefix || ""}${b.prev}` : " · first on the board"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {audioBlocked() && (
+              <p className="cs-reveal-quiet">
+                Sound is blocked by the browser. On iPhone, check the silent switch.
+              </p>
+            )}
+
             <button className="cs-reveal-done" onClick={onClose}>
               Done
             </button>
@@ -1771,19 +1867,41 @@ const CSS = `
 
 /* Winner reveal */
 .cs-reveal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(12, 18, 15, 0.72); backdrop-filter: blur(3px); animation: cs-fade 180ms ease-out; cursor: pointer; }
-.cs-reveal-card { position: relative; width: 100%; max-width: 380px; text-align: center; background: var(--card); border-radius: 14px; padding: 30px 24px 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32); }
+.cs-reveal-card { position: relative; width: 100%; max-width: 380px; max-height: 100%; overflow-y: auto; text-align: center; background: var(--card); border-radius: 14px; padding: 30px 24px 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32); cursor: default; }
 .cs-reveal-card.show { animation: cs-pop 420ms cubic-bezier(0.2, 1.5, 0.4, 1); }
 .cs-reveal-kicker { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 600; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-2); margin: 0; }
 .cs-reveal-name { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 800; font-size: 40px; letter-spacing: -0.03em; line-height: 1.05; margin: 8px 0 2px; overflow-wrap: anywhere; }
 .cs-reveal-score { font-size: 30px; font-weight: 600; margin: 0; }
 .cs-reveal-note { font-size: 13px; color: var(--ink-2); margin: 6px 0 0; }
 .cs-reveal-skip { font-size: 12px; color: var(--ink-2); margin: 18px 0 0; }
+
+/* Final table, best first */
+.cs-reveal-board { list-style: none; margin: 16px 0 0; padding: 0; text-align: left; }
+.cs-rb { display: flex; align-items: baseline; gap: 10px; padding: 6px 8px; border-radius: 7px; }
+.cs-rb.win { background: var(--paper); }
+.cs-rb-pos { flex: none; width: 16px; font-size: 11px; color: var(--ink-2); }
+.cs-rb.win .cs-rb-pos { color: #35604A; }
+.cs-rb-name { flex: 1; font-size: 14px; overflow-wrap: anywhere; }
+.cs-rb.win .cs-rb-name { font-weight: 600; }
+.cs-rb-total { font-size: 17px; font-weight: 600; }
+
+/* Records this game took */
+.cs-reveal-recs { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); text-align: left; }
+.cs-reveal-recs .cs-reveal-kicker { text-align: left; margin-bottom: 6px; }
+.cs-rr { display: grid; grid-template-columns: 1fr auto; gap: 0 10px; padding: 5px 0; }
+.cs-rr-label { font-size: 13px; font-weight: 600; }
+.cs-rr-value { grid-row: span 2; align-self: center; font-size: 20px; font-weight: 600; color: #C0A040; }
+.cs-rr-meta { font-size: 11px; color: var(--ink-2); }
+.cs-reveal-quiet { font-size: 11px; color: var(--ink-2); margin: 14px 0 0; }
 .cs-reveal-done { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 13px; margin-top: 18px; background: var(--ink); color: #fff; border: none; border-radius: 8px; padding: 10px 22px; cursor: pointer; }
 
 .cs-roll { display: flex; gap: 8px; justify-content: center; margin: 22px 0 4px; }
 .cs-roll span { width: 11px; height: 11px; border-radius: 50%; background: var(--ink); animation: cs-roll 620ms ease-in-out infinite; }
 
-.cs-burst { position: absolute; inset: 0; overflow: hidden; border-radius: 14px; pointer-events: none; }
+/* Bursts from behind the winner's name, not the middle of a card that now
+   runs long enough to hold the scores and the records. */
+.cs-burst { position: absolute; inset: 0 0 auto 0; height: 210px; overflow: hidden; border-radius: 14px 14px 0 0; pointer-events: none; z-index: 0; }
+.cs-reveal-card > *:not(.cs-burst) { position: relative; z-index: 1; }
 .cs-burst span { position: absolute; top: 50%; left: 50%; width: 9px; height: 10px; margin: -5px 0 0 -4px; clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); animation: cs-burst 900ms ease-out forwards; }
 
 @keyframes cs-fade { from { opacity: 0; } to { opacity: 1; } }
