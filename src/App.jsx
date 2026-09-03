@@ -250,6 +250,7 @@ function buildRows(games) {
     g.players.forEach((p, i) => {
       rows.push({
         gameId: g.id,
+        seat: i,
         date: g.date,
         cards: g.cards,
         name: p.name,
@@ -322,27 +323,167 @@ function longestStreaks(rows) {
     .sort((a, b) => b.n - a.n || String(b.to).localeCompare(String(a.to)));
 }
 
-/* Best row for a metric. Rows arrive newest-first, so a strict > keeps the
-   most recent holder of a tied record. */
+/* Rows arrive newest-first, grouped by game. Records read them the other way
+   round, because a record is only taken by beating it: whoever got there
+   first keeps it, and a later score that only matches it is second best. */
+function chronological(rows) {
+  const byGame = [];
+  const at = new Map();
+  rows.forEach((r) => {
+    if (!at.has(r.gameId)) {
+      at.set(r.gameId, byGame.length);
+      byGame.push([]);
+    }
+    byGame[at.get(r.gameId)].push(r);
+  });
+  return byGame.reverse().flat();
+}
+
+/* Best row for a metric, oldest first so a strict > leaves a tied record with
+   the player who set it. */
 function recordFor(rows, get) {
   let best = null;
-  rows.forEach((r) => {
+  chronological(rows).forEach((r) => {
     const v = get(r);
     if (best === null || v > best.value) best = { value: v, row: r };
   });
   return best;
 }
 
-/* The all-time records the reveal can announce, in the order it lists them.
-   Labels match the Records panel on Home so the two never disagree. */
-const RECORD_FIELDS = [
+/* Every record the Records panels show, in the order they show it. `get`
+   reads the value off a row, `eligible` narrows which rows can hold it, and
+   grouped ones say where they land inside stats.records. The panels,
+   buildStats and the record detail all read this list, so they cannot drift. */
+const METRICS = [
   { key: "total", label: "Highest score", get: (r) => r.total },
   { key: "wildlife", label: "Highest wildlife", get: (r) => r.wildlife },
+  {
+    key: "single",
+    label: "Highest single landscape",
+    get: (r) => r.biggest.size,
+    tag: (r) => habitatLabel(r.biggest.key),
+  },
+  // "Total maps" is the five runs added up; landscapeTotal adds the bonuses.
   { key: "landscape", label: "Highest total maps", get: (r) => r.landscape },
-  { key: "landscapeTotal", label: "Highest maps + bonuses", get: (r) => r.landscapeTotal },
-  { key: "single", label: "Biggest single landscape", get: (r) => r.biggest.size },
+  {
+    key: "landscapeTotal",
+    label: "Highest total maps + bonuses",
+    get: (r) => r.landscapeTotal,
+  },
   { key: "nature", label: "Most pinecones", get: (r) => r.nature },
+  {
+    key: "margin",
+    label: "Biggest blowout",
+    prefix: "+",
+    get: (r) => r.margin,
+    // Only a game somebody won, against somebody, has a margin to speak of.
+    eligible: (r) => r.players > 1 && r.won,
+  },
+  ...ANIMALS.map((a) => ({
+    key: `animal:${a.key}`,
+    group: "animals",
+    sub: a.key,
+    label: a.label,
+    color: a.color,
+    get: (r) => r.animals[a.key],
+  })),
+  ...HABITATS.map((h) => ({
+    key: `habitat:${h.key}`,
+    group: "habitats",
+    sub: h.key,
+    label: h.label,
+    color: h.color,
+    get: (r) => r.sizes[h.key],
+  })),
 ];
+const MAIN_METRICS = METRICS.filter((m) => !m.group);
+const METRIC = Object.fromEntries(METRICS.map((m) => [m.key, m]));
+const ANIMAL_METRICS = METRICS.filter((m) => m.group === "animals");
+const HABITAT_METRICS = METRICS.filter((m) => m.group === "habitats");
+const metricRows = (rows, m) => (m.eligible ? rows.filter(m.eligible) : rows);
+/* Where a metric's record sits inside stats.records. */
+const recOf = (records, m) => (m.group ? records[m.group][m.sub] : records[m.key]);
+
+/* The all-time records the reveal can announce, in the order it lists them,
+   under the shorter labels that fit on the reveal card. Reading them off
+   METRICS is what keeps the reveal and the Records panels in step. */
+const RECORD_FIELDS = [
+  ["total"],
+  ["wildlife"],
+  ["landscape"],
+  ["landscapeTotal", "Highest maps + bonuses"],
+  ["single", "Biggest single landscape"],
+  ["nature"],
+].map(([key, label]) => ({ ...METRIC[key], label: label || METRIC[key].label }));
+
+/* Everything the reveal can call out: the record fields, plus the blowout
+   that only a contested game has. */
+const REVEAL_FIELDS = [...RECORD_FIELDS, METRIC.margin];
+
+/* A player-game, which is what holds a record. */
+const rowId = (r) => `${r.gameId}:${r.seat}`;
+
+/* How long each holder of one record kept it, measured in games played.
+   Games are walked oldest-first and a row has to beat the standing record to
+   take it, which is the tie-break recordFor makes. Mega C games put no row up
+   for the record but still count as games elapsed, because the record stood
+   through them. */
+function recordReigns(games, rows, m) {
+  const byGame = new Map();
+  metricRows(rows, m).forEach((r) => {
+    if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
+    byGame.get(r.gameId).push(r);
+  });
+  const reigns = new Map();
+  const order = games.map((g) => g.id).reverse();
+  let best = null;
+  let holder = null;
+  let since = 0;
+  order.forEach((id, i) => {
+    let top = null;
+    (byGame.get(id) || []).forEach((r) => {
+      if (top === null || m.get(r) > m.get(top)) top = r;
+    });
+    if (top === null || (best !== null && m.get(top) <= best)) return;
+    if (holder) Object.assign(reigns.get(holder), { games: i - since, live: false });
+    best = m.get(top);
+    holder = rowId(top);
+    since = i;
+    reigns.set(holder, { games: 0, live: true });
+  });
+  if (holder) reigns.get(holder).games = order.length - since;
+  return reigns;
+}
+
+const TOP_N = 5;
+/* Below this many past scores a top five means nothing, so it goes unsaid. */
+const TOP_POOL = 10;
+
+/* Where a just-finished game landed on the all-time top five, for the records
+   it did not take outright — those are announced on their own. Matching a
+   score ranks below it, the same way a record is only taken by being beaten.
+   `scored` is the log as it stood before this game. */
+function topFives(rows, scored, broken) {
+  if (!rows.length || rows[0].megaC) return [];
+  const took = new Set(broken.map((b) => b.label));
+  const out = [];
+  REVEAL_FIELDS.forEach((m) => {
+    if (took.has(m.label)) return;
+    const past = metricRows(scored, m).map(m.get);
+    if (past.length < TOP_POOL) return;
+    const fresh = metricRows(rows, m);
+    fresh.forEach((r, i) => {
+      const v = m.get(r);
+      if (v <= 0) return;
+      const ahead =
+        past.filter((p) => p >= v).length +
+        fresh.filter((o, j) => m.get(o) > v || (m.get(o) === v && j < i)).length;
+      if (ahead < TOP_N)
+        out.push({ label: m.label, prefix: m.prefix, name: r.name, value: v, rank: ahead + 1 });
+    });
+  });
+  return out.sort((a, b) => a.rank - b.rank);
+}
 
 /* Which records a just-finished game took. `records` is the pre-save picture,
    which is what save() still holds when it calls this. A Mega C game is left
@@ -378,25 +519,12 @@ function buildStats(games) {
      score-based figure below reads `scored` instead of `rows`. */
   const scored = rows.filter((r) => !r.megaC);
 
-  const records = {
-    total: recordFor(scored, (r) => r.total),
-    wildlife: recordFor(scored, (r) => r.wildlife),
-    // "Total maps" is the five runs added up; landscapeTotal adds the bonuses.
-    landscapeTotal: recordFor(scored, (r) => r.landscapeTotal),
-    landscape: recordFor(scored, (r) => r.landscape),
-    single: recordFor(scored, (r) => r.biggest.size),
-    nature: recordFor(scored, (r) => r.nature),
-    margin: recordFor(
-      scored.filter((r) => r.players > 1 && r.won),
-      (r) => r.margin
-    ),
-    animals: Object.fromEntries(
-      ANIMALS.map((a) => [a.key, recordFor(scored, (r) => r.animals[a.key])])
-    ),
-    habitats: Object.fromEntries(
-      HABITATS.map((h) => [h.key, recordFor(scored, (r) => r.sizes[h.key])])
-    ),
-  };
+  const records = { animals: {}, habitats: {} };
+  METRICS.forEach((m) => {
+    const rec = recordFor(metricRows(scored, m), m.get);
+    if (m.group) records[m.group][m.sub] = rec;
+    else records[m.key] = rec;
+  });
 
   /* Head to head: only games where both regulars sat down. */
   const h2h = {
@@ -729,6 +857,7 @@ export default function CascadiaTracker() {
 
 function Home({ games, cov, stats, onPlay, onGo }) {
   const [pick, setPick] = useState(() => suggestCombo(cov));
+  const [openRecord, recordDetail] = useRecordDetail(games, stats.scored);
   // Re-roll whenever the log changes so the suggestion is never one you played.
   useEffect(() => setPick(suggestCombo(cov)), [cov]);
 
@@ -894,19 +1023,8 @@ function Home({ games, cov, stats, onPlay, onGo }) {
             All stats
           </button>
         </div>
-        <div className="cs-rec-grid">
-          <Record label="Highest score" rec={stats.records.total} />
-          <Record label="Highest wildlife" rec={stats.records.wildlife} />
-          <Record
-            label="Highest single landscape"
-            rec={stats.records.single}
-            tag={(r) => habitatLabel(r.biggest.key)}
-          />
-          <Record label="Highest total maps" rec={stats.records.landscape} />
-          <Record label="Highest total maps + bonuses" rec={stats.records.landscapeTotal} />
-          <Record label="Most pinecones" rec={stats.records.nature} />
-          <Record label="Biggest blowout" rec={stats.records.margin} prefix="+" />
-        </div>
+        <p className="cs-legend cs-legend-wide">Tap a record for the top 5 and how long it has stood.</p>
+        <RecordGrid list={MAIN_METRICS} records={stats.records} onOpen={openRecord} />
       </section>
 
       <section className="cs-panel">
@@ -942,6 +1060,8 @@ function Home({ games, cov, stats, onPlay, onGo }) {
           Nothing recorded yet — <strong>Add game</strong> fills all of this in.
         </p>
       )}
+
+      {recordDetail}
     </div>
   );
 }
@@ -982,15 +1102,15 @@ function SpeakerIcon({ on }) {
   );
 }
 
-function Record({ label, rec, prefix = "", color, tag }) {
-  const tagText = rec && tag ? tag(rec.row) : null;
+function Record({ m, rec, onOpen }) {
+  const tagText = rec && m.tag ? m.tag(rec.row) : null;
   return (
-    <div className="cs-rec">
-      <span className="cs-stat-label" style={color ? { color } : undefined}>
-        {label}
+    <button className="cs-rec" onClick={() => onOpen(m)} disabled={!rec}>
+      <span className="cs-stat-label" style={m.color ? { color: m.color } : undefined}>
+        {m.label}
       </span>
       <span className="cs-rec-value mono">
-        {rec ? `${prefix}${rec.value}` : "–"}
+        {rec ? `${m.prefix || ""}${rec.value}` : "–"}
         {tagText ? <em className="cs-rec-tag">{tagText}</em> : null}
       </span>
       {rec ? (
@@ -1003,6 +1123,144 @@ function Record({ label, rec, prefix = "", color, tag }) {
       ) : (
         <span className="cs-rec-who">no games yet</span>
       )}
+    </button>
+  );
+}
+
+function RecordGrid({ list, records, onOpen, tight }) {
+  return (
+    <div className={"cs-rec-grid" + (tight ? " tight" : "")}>
+      {list.map((m) => (
+        <Record key={m.key} m={m} rec={recOf(records, m)} onOpen={onOpen} />
+      ))}
+    </div>
+  );
+}
+
+/* Both Records panels keep their own open-record state; this is the piece
+   they share. Returns [openRecord, detailNode]. */
+function useRecordDetail(games, rows) {
+  const [m, setM] = useState(null);
+  const node = m ? (
+    <RecordDetail m={m} games={games} rows={rows} onClose={() => setM(null)} />
+  ) : null;
+  return [setM, node];
+}
+
+/* How long a score stood as the record. Scores that never held it say
+   nothing at all. */
+const heldText = (reign) =>
+  reign ? `${reign.games} game${reign.games === 1 ? "" : "s"} held` : "";
+
+/* One record up close: who holds it and for how long, then the five best
+   scores ever posted for it. The other four are listed whether or not they
+   ever held the record themselves. */
+function RecordDetail({ m, games, rows, onClose }) {
+  const top = useMemo(() => {
+    const pool = metricRows(rows, m);
+    const reigns = recordReigns(games, pool, m);
+    // The sort is stable over a chronological pool, so tied scores rank oldest
+    // first — same as the records themselves, and #1 is the holder the panel
+    // names.
+    return chronological(pool)
+      .sort((a, b) => m.get(b) - m.get(a))
+      .slice(0, 5)
+      .map((r) => ({ row: r, value: m.get(r), reign: reigns.get(rowId(r)) || null }));
+  }, [m, games, rows]);
+
+  const best = top[0];
+  return (
+    <Modal title={m.label} onClose={onClose}>
+      {!best ? (
+        <p className="cs-legend">No scored games to draw on yet.</p>
+      ) : (
+        <>
+          <div className="cs-rd-hero">
+            <span className="cs-rec-value mono">
+              {m.prefix || ""}
+              {best.value}
+              {m.tag ? <em className="cs-rec-tag">{m.tag(best.row)}</em> : null}
+            </span>
+            <span className="cs-rec-who">
+              <strong
+                style={
+                  regularFor(best.row.name)
+                    ? { color: regularFor(best.row.name).color }
+                    : undefined
+                }
+              >
+                {displayName(best.row.name)}
+              </strong>
+              <span className="mono"> · {best.row.date} · {comboLabel(best.row.cards)}</span>
+            </span>
+            {best.reign && (
+              <span className="cs-rd-standing">{heldText(best.reign)}</span>
+            )}
+          </div>
+
+          <h3 className="cs-subhead">Top {top.length} all time</h3>
+          <ol className="cs-rd-list">
+            {top.map((e, i) => (
+              <li key={rowId(e.row)}>
+                <span className="cs-rd-rank mono">{i + 1}</span>
+                <span className="cs-rd-value mono">
+                  {m.prefix || ""}
+                  {e.value}
+                </span>
+                <span className="cs-rd-who">
+                  <strong
+                    style={
+                      regularFor(e.row.name)
+                        ? { color: regularFor(e.row.name).color }
+                        : undefined
+                    }
+                  >
+                    {displayName(e.row.name)}
+                  </strong>
+                  <span className="mono"> · {e.row.date}</span>
+                </span>
+                {e.reign && (
+                  <span className={"cs-rd-held" + (e.reign.live ? " live" : "")}>
+                    {heldText(e.reign)}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ol>
+          <p className="cs-legend cs-legend-wide">
+            Runs are counted in games played, Mega C games included — the record
+            stood through those too.
+          </p>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Modal                                                               */
+/* ------------------------------------------------------------------ */
+
+function Modal({ title, onClose, children }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="cs-modal" onClick={onClose} role="dialog" aria-modal="true" aria-label={title}>
+      <div className="cs-modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="cs-modal-head">
+          <h2>{title}</h2>
+          <button className="cs-modal-x" onClick={onClose} aria-label="Close">
+            ×
+          </button>
+        </div>
+        {children}
+      </div>
     </div>
   );
 }
@@ -1071,6 +1329,7 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
       }))
       .sort((a, b) => b.total - a.total || b.nature - a.nature);
     const broken = recordsBroken(rows, stats.records);
+    const topFive = topFives(rows, stats.scored, broken);
     const beaten = board.find((r) => !r.won && !r.tied);
 
     onSave(game);
@@ -1089,6 +1348,7 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
         winnerKey: nameKey(board[0].name),
         megaC: !!megaC,
         broken,
+        topFive,
       });
   };
 
@@ -1303,7 +1563,7 @@ function WinnerReveal({ result, onClose }) {
     setPhase("show");
   };
 
-  const { board, winners, tie, margin, megaC, broken } = result;
+  const { board, winners, tie, margin, megaC, broken, topFive } = result;
   const names = winners.map((w) => displayName(w.name) || "Someone");
   const colour = !tie && regularFor(winners[0].name) ? regularFor(winners[0].name).color : null;
 
@@ -1392,6 +1652,22 @@ function WinnerReveal({ result, onClose }) {
               </div>
             )}
 
+            {!!topFive.length && (
+              <div className="cs-reveal-recs">
+                <p className="cs-reveal-kicker">On the top five</p>
+                {topFive.map((t) => (
+                  <div className="cs-rr" key={t.label + t.name}>
+                    <span className="cs-rr-label">{t.label}</span>
+                    <span className="cs-rr-value mono alt">#{t.rank}</span>
+                    <span className="cs-rr-meta">
+                      {displayName(t.name)} · {t.prefix || ""}
+                      {t.value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {audioBlocked() && (
               <p className="cs-reveal-quiet">
                 Sound is blocked by the browser. On iPhone, check the silent switch.
@@ -1414,6 +1690,9 @@ function WinnerReveal({ result, onClose }) {
 
 function GamesList({ games, cov, onDelete }) {
   const [open, setOpen] = useState(null);
+  // Deleting a game rewrites every stat and cannot be undone, so it asks first.
+  const [pendingId, setPendingId] = useState(null);
+  const pending = games.find((g) => g.id === pendingId) || null;
   if (!games.length)
     return (
       <p className="cs-empty">
@@ -1505,7 +1784,7 @@ function GamesList({ games, cov, onDelete }) {
                       </tbody>
                   </table>
                 </div>
-                <button className="cs-ghost sm danger" onClick={() => onDelete(g.id)}>
+                <button className="cs-ghost sm danger" onClick={() => setPendingId(g.id)}>
                   Delete this game
                 </button>
               </div>
@@ -1513,6 +1792,30 @@ function GamesList({ games, cov, onDelete }) {
           </div>
         );
       })}
+
+      {pending && (
+        <Modal title="Delete this game?" onClose={() => setPendingId(null)}>
+          <p className="cs-modal-body">
+            The game on <strong>{pending.date}</strong> ({comboLabel(pending.cards)},{" "}
+            {pending.players.map((p) => displayName(p.name)).join(" · ")}) goes for good,
+            and every stat and record recounts without it. There is no undo.
+          </p>
+          <div className="cs-modal-actions">
+            <button className="cs-ghost sm" onClick={() => setPendingId(null)}>
+              Keep it
+            </button>
+            <button
+              className="cs-danger"
+              onClick={() => {
+                onDelete(pending.id);
+                setPendingId(null);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1524,6 +1827,7 @@ function GamesList({ games, cov, onDelete }) {
 function Stats({ games, cov, stats }) {
   const [who, setWho] = useState("all"); // "all" | a regular's key
   const rows = stats.scored;
+  const [openRecord, recordDetail] = useRecordDetail(games, rows);
   const means = useMemo(
     () => cardMeans(rows, who === "all" ? null : who),
     [rows, who]
@@ -1599,35 +1903,18 @@ function Stats({ games, cov, stats }) {
       <div className="cs-panel">
         <div className="cs-panel-head">
           <h2>Records</h2>
-          <p className="cs-legend">Single-game highs, and who set them. Mega C excluded.</p>
+          <p className="cs-legend">
+            Single-game highs, and who set them. Mega C excluded. Tap one for the
+            top 5 and how long it has stood.
+          </p>
         </div>
-        <div className="cs-rec-grid">
-          <Record label="Highest score" rec={stats.records.total} />
-          <Record label="Highest wildlife" rec={stats.records.wildlife} />
-          <Record
-            label="Highest single landscape"
-            rec={stats.records.single}
-            tag={(r) => habitatLabel(r.biggest.key)}
-          />
-          <Record label="Highest total maps" rec={stats.records.landscape} />
-          <Record label="Highest total maps + bonuses" rec={stats.records.landscapeTotal} />
-          <Record label="Most pinecones" rec={stats.records.nature} />
-          <Record label="Biggest blowout" rec={stats.records.margin} prefix="+" />
-        </div>
+        <RecordGrid list={MAIN_METRICS} records={stats.records} onOpen={openRecord} />
 
         <h3 className="cs-subhead">Best single animal</h3>
-        <div className="cs-rec-grid tight">
-          {ANIMALS.map((a) => (
-            <Record key={a.key} label={a.label} rec={stats.records.animals[a.key]} color={a.color} />
-          ))}
-        </div>
+        <RecordGrid list={ANIMAL_METRICS} records={stats.records} onOpen={openRecord} tight />
 
         <h3 className="cs-subhead">Biggest run of each type</h3>
-        <div className="cs-rec-grid tight">
-          {HABITATS.map((h) => (
-            <Record key={h.key} label={h.label} rec={stats.records.habitats[h.key]} color={h.color} />
-          ))}
-        </div>
+        <RecordGrid list={HABITAT_METRICS} records={stats.records} onOpen={openRecord} tight />
       </div>
 
       <div className="cs-panel">
@@ -1732,6 +2019,8 @@ function Stats({ games, cov, stats }) {
           })}
         </div>
       </div>
+
+      {recordDetail}
     </div>
   );
 }
@@ -1822,7 +2111,10 @@ const CSS = `
 
 .cs-rec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
 .cs-rec-grid.tight { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-.cs-rec { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); padding-left: 10px; }
+/* A record card is a button: tapping one opens its top 5. */
+.cs-rec { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: none; border-left: 2px solid var(--line); border-radius: 0 4px 4px 0; padding: 2px 4px 2px 10px; cursor: pointer; transition: border-color 120ms, background 120ms; }
+.cs-rec:hover:not(:disabled) { border-left-color: #35604A; background: #F4F7F2; }
+.cs-rec:disabled { cursor: default; }
 .cs-rec-value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
 .cs-rec-tag { font-style: normal; font-family: 'Inter Tight', system-ui, sans-serif; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-left: 6px; letter-spacing: 0; }
 .cs-rec-who { font-size: 11px; color: var(--ink-2); }
@@ -1921,6 +2213,7 @@ const CSS = `
 .cs-rr { display: grid; grid-template-columns: 1fr auto; gap: 0 10px; padding: 5px 0; }
 .cs-rr-label { font-size: 13px; font-weight: 600; }
 .cs-rr-value { grid-row: span 2; align-self: center; font-size: 20px; font-weight: 600; color: #C0A040; }
+.cs-rr-value.alt { font-size: 17px; color: #5A6660; }
 .cs-rr-meta { font-size: 11px; color: var(--ink-2); }
 .cs-reveal-quiet { font-size: 11px; color: var(--ink-2); margin: 14px 0 0; }
 .cs-reveal-done { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 13px; margin-top: 18px; background: var(--ink); color: #fff; border: none; border-radius: 8px; padding: 10px 22px; cursor: pointer; }
@@ -1946,6 +2239,32 @@ const CSS = `
 
 .cs-save { width: 100%; margin-top: 14px; font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 14px; background: var(--ink); color: #fff; border: none; border-radius: 8px; padding: 12px; cursor: pointer; }
 .cs-save:hover { background: #35604A; }
+
+/* Modal ------------------------------------------------------------- */
+.cs-modal { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(12, 18, 15, 0.62); backdrop-filter: blur(3px); animation: cs-fade 140ms ease-out; }
+.cs-modal-card { width: 100%; max-width: 440px; max-height: 100%; overflow-y: auto; background: var(--card); border-radius: 12px; padding: 16px 18px 18px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32); }
+.cs-modal-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.cs-modal-head h2 { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+.cs-modal-x { flex: none; background: none; border: none; font-size: 22px; line-height: 1; color: var(--ink-2); cursor: pointer; padding: 0 2px; }
+.cs-modal-body { font-size: 13px; line-height: 1.5; margin: 0; }
+.cs-modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.cs-modal-actions .cs-ghost { margin-top: 0; }
+.cs-danger { font-family: inherit; font-size: 12px; font-weight: 600; background: #B4453A; color: #fff; border: none; border-radius: 6px; padding: 5px 14px; cursor: pointer; }
+.cs-danger:hover { background: #9A3830; }
+
+/* One record up close ----------------------------------------------- */
+.cs-rd-hero { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid #35604A; padding-left: 10px; }
+.cs-rd-hero .cs-rec-value { font-size: 32px; }
+.cs-rd-standing { font-size: 11px; font-weight: 600; color: #35604A; margin-top: 2px; }
+.cs-rd-list { list-style: none; margin: 0; padding: 0; }
+.cs-rd-list li { display: grid; grid-template-columns: 16px 52px 1fr; gap: 3px 8px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); }
+.cs-rd-rank { font-size: 11px; color: var(--ink-2); }
+.cs-rd-value { font-size: 18px; font-weight: 600; }
+.cs-rd-who { font-size: 12px; }
+.cs-rd-who strong { font-weight: 600; }
+.cs-rd-who .mono { color: var(--ink-2); font-size: 11px; }
+.cs-rd-held { grid-column: 2 / -1; font-size: 11px; color: var(--ink-2); }
+.cs-rd-held.live { color: #35604A; font-weight: 600; }
 
 /* Log --------------------------------------------------------------- */
 .cs-game { border-bottom: 1px solid var(--line); }
