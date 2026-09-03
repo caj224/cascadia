@@ -183,11 +183,16 @@ function buildCoverage(games) {
       }
   });
 
-  return { played, comboCount, cardCount, pairs };
+  // games arrive newest-first, so games[0] is the last one played.
+  return { played, comboCount, cardCount, pairs, last: games.length ? games[0].cards : null };
 }
 
 function suggestCombo(cov) {
-  const { played, pairs } = cov;
+  const { played, pairs, last } = cov;
+  /* None of the last game's cards come back out, so every suggestion is a
+     table you have not just seen. Six letters an animal still leaves 7,776
+     combinations to draw from. */
+  const lettersFor = (a) => (last ? CARDS.filter((L) => L !== last[ANIMALS[a].key]) : CARDS);
   let best = null;
   let bestScore = -1;
   for (let t = 0; t < 600; t++) {
@@ -195,7 +200,7 @@ function suggestCombo(cov) {
     for (let a = 0; a < ANIMALS.length; a++) {
       let bestLetters = [];
       let bestGain = -1;
-      for (const L of CARDS) {
+      for (const L of lettersFor(a)) {
         let gain = 0;
         for (let b = 0; b < a; b++)
           if (!pairs.has(pairKey(b, a, pick[b], L))) gain++;
@@ -217,7 +222,11 @@ function suggestCombo(cov) {
     }
     if (score === 10) break;
   }
-  if (!best) best = ANIMALS.map(() => CARDS[Math.floor(Math.random() * 7)]);
+  if (!best)
+    best = ANIMALS.map((_, a) => {
+      const letters = lettersFor(a);
+      return letters[Math.floor(Math.random() * letters.length)];
+    });
   return Object.fromEntries(ANIMALS.map((a, i) => [a.key, best[i]]));
 }
 
@@ -641,6 +650,7 @@ function playerMeans(rows) {
       landscape: mean((r) => r.landscape),
       bonus: mean((r) => r.bonus),
       nature: mean((r) => r.nature),
+      total: mean((r) => r.total),
     };
   });
 }
@@ -938,7 +948,8 @@ function Home({ games, cov, stats, onPlay, onGo }) {
           </div>
           <div className="cs-suggest-side">
             <p className="cs-legend">
-              A combination you have never played.
+              A combination you have never played, with none of the cards from your
+              last game.
             </p>
             <button className="cs-save sm" onClick={() => onPlay(pick)}>
               Score this game
@@ -1921,6 +1932,7 @@ function Stats({ games, cov, stats }) {
                 <th>Maps</th>
                 <th>Maj</th>
                 <th>Pine</th>
+                <th>Total</th>
               </tr>
             </thead>
             <tbody>
@@ -1937,6 +1949,7 @@ function Stats({ games, cov, stats }) {
                   <td>{mean1(p.landscape)}</td>
                   <td>{mean1(p.bonus)}</td>
                   <td>{mean1(p.nature)}</td>
+                  <td className="cs-td-total">{mean1(p.total)}</td>
                 </tr>
               ))}
             </tbody>
