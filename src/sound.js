@@ -91,7 +91,15 @@ function audio() {
   if (muted) return null;
   const ac = ensureCtx();
   if (!ac) return null;
-  if (ac.state === "suspended") ac.resume();
+  /* Anything short of "running" is resumed, not just "suspended": Safari parks
+     the context in "interrupted" when it takes the audio session back after a
+     clip finishes, and it never leaves that state on its own. A context that
+     went away also has to be woken by unlock() again before it makes a sound,
+     so the kick is armed here rather than fired once for the life of the tab. */
+  if (ac.state !== "running") {
+    kicked = false;
+    ac.resume();
+  }
   return ac;
 }
 
