@@ -623,6 +623,30 @@ function buildStats(games) {
   };
 }
 
+/* What an average game looks like for each regular: mean points per animal
+   whatever card was out, and the mean of each block of the sheet. Mega C rows
+   are already out of `rows`, so nothing here has to filter them. */
+function playerMeans(rows) {
+  return REGULARS.map((reg) => {
+    const mine = rows.filter((r) => r.key === reg.key);
+    const mean = (get) =>
+      mine.length ? mine.reduce((sum, r) => sum + get(r), 0) / mine.length : null;
+    return {
+      ...reg,
+      n: mine.length,
+      animals: Object.fromEntries(
+        ANIMALS.map((a) => [a.key, mean((r) => r.animals[a.key])])
+      ),
+      wildlife: mean((r) => r.wildlife),
+      landscape: mean((r) => r.landscape),
+      bonus: mean((r) => r.bonus),
+      nature: mean((r) => r.nature),
+    };
+  });
+}
+
+const mean1 = (v) => (v === null ? "–" : v.toFixed(1));
+
 /* Mean wildlife points scored on each scoring card, optionally for one
    player. `min` guards against a single lucky game defining "best". */
 function cardMeans(rows, playerKey) {
@@ -1175,37 +1199,15 @@ function RecordDetail({ m, games, rows, onClose }) {
         <p className="cs-legend">No scored games to draw on yet.</p>
       ) : (
         <>
-          <div className="cs-rd-hero">
-            <span className="cs-rec-value mono">
-              {m.prefix || ""}
-              {best.value}
-              {m.tag ? <em className="cs-rec-tag">{m.tag(best.row)}</em> : null}
-            </span>
-            <span className="cs-rec-who">
-              <strong
-                style={
-                  regularFor(best.row.name)
-                    ? { color: regularFor(best.row.name).color }
-                    : undefined
-                }
-              >
-                {displayName(best.row.name)}
-              </strong>
-              <span className="mono"> · {best.row.date} · {comboLabel(best.row.cards)}</span>
-            </span>
-            {best.reign && (
-              <span className="cs-rd-standing">{heldText(best.reign)}</span>
-            )}
-          </div>
-
-          <h3 className="cs-subhead">Top {top.length} all time</h3>
+          <h3 className="cs-subhead cs-rd-subhead">Top {top.length} all time</h3>
           <ol className="cs-rd-list">
             {top.map((e, i) => (
-              <li key={rowId(e.row)}>
+              <li key={rowId(e.row)} className={i === 0 ? "lead" : undefined}>
                 <span className="cs-rd-rank mono">{i + 1}</span>
                 <span className="cs-rd-value mono">
                   {m.prefix || ""}
                   {e.value}
+                  {i === 0 && m.tag ? <em className="cs-rec-tag">{m.tag(e.row)}</em> : null}
                 </span>
                 <span className="cs-rd-who">
                   <strong
@@ -1227,10 +1229,6 @@ function RecordDetail({ m, games, rows, onClose }) {
               </li>
             ))}
           </ol>
-          <p className="cs-legend cs-legend-wide">
-            Runs are counted in games played, Mega C games included — the record
-            stood through those too.
-          </p>
         </>
       )}
     </Modal>
@@ -1832,6 +1830,7 @@ function Stats({ games, cov, stats }) {
     () => cardMeans(rows, who === "all" ? null : who),
     [rows, who]
   );
+  const avg = useMemo(() => playerMeans(rows), [rows]);
   const pct = (cov.played.size / TOTAL_COMBOS) * 100;
 
   return (
@@ -1898,6 +1897,51 @@ function Stats({ games, cov, stats }) {
         ) : (
           <p className="cs-legend">No games recorded yet.</p>
         )}
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Average sheet</h2>
+          <p className="cs-legend">
+            What a typical game looks like for each of them, whatever cards were out.
+            Mega C excluded; the small number is games played.
+          </p>
+        </div>
+        <div className="cs-table-wrap">
+          <table className="cs-table mono">
+            <thead>
+              <tr>
+                <th>Player</th>
+                {ANIMALS.map((a) => (
+                  <th key={a.key} style={{ color: a.color }}>
+                    {a.label.slice(0, 3)}
+                  </th>
+                ))}
+                <th>Wild</th>
+                <th>Maps</th>
+                <th>Maj</th>
+                <th>Pine</th>
+              </tr>
+            </thead>
+            <tbody>
+              {avg.map((p) => (
+                <tr key={p.key}>
+                  <td className="cs-td-name" style={{ color: p.color }}>
+                    {p.label}
+                    <em className="cs-n">{p.n}</em>
+                  </td>
+                  {ANIMALS.map((a) => (
+                    <td key={a.key}>{mean1(p.animals[a.key])}</td>
+                  ))}
+                  <td>{mean1(p.wildlife)}</td>
+                  <td>{mean1(p.landscape)}</td>
+                  <td>{mean1(p.bonus)}</td>
+                  <td>{mean1(p.nature)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="cs-panel">
@@ -2253,11 +2297,13 @@ const CSS = `
 .cs-danger:hover { background: #9A3830; }
 
 /* One record up close ----------------------------------------------- */
-.cs-rd-hero { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid #35604A; padding-left: 10px; }
-.cs-rd-hero .cs-rec-value { font-size: 32px; }
-.cs-rd-standing { font-size: 11px; font-weight: 600; color: #35604A; margin-top: 2px; }
+.cs-rd-subhead { margin-top: 0; }
 .cs-rd-list { list-style: none; margin: 0; padding: 0; }
-.cs-rd-list li { display: grid; grid-template-columns: 16px 52px 1fr; gap: 3px 8px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); }
+.cs-rd-list li { display: grid; grid-template-columns: 16px 58px 1fr; gap: 3px 8px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); }
+/* The record leads the list, so it is the one that reads big. */
+.cs-rd-list li.lead { border-top: none; padding-top: 0; }
+.cs-rd-list li.lead .cs-rd-value { font-size: 24px; color: #24503A; }
+.cs-rd-list li.lead .cs-rd-who { font-size: 13px; }
 .cs-rd-rank { font-size: 11px; color: var(--ink-2); }
 .cs-rd-value { font-size: 18px; font-weight: 600; }
 .cs-rd-who { font-size: 12px; }
