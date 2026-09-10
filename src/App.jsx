@@ -25,6 +25,24 @@ const HABITATS = [
 const CARDS = ["A", "B", "C", "D", "E", "F", "G"];
 const TOTAL_COMBOS = Math.pow(CARDS.length, ANIMALS.length); // 16807
 const STORE_KEY = "cascadia:v1";
+/* Whether the running totals stay covered while a game is being entered.
+   A habit rather than a property of any one game, so it lives in storage
+   next to the mute setting and outlives the pad it was set on. */
+const HIDE_KEY = "cascadia:hide-scores";
+const readHidden = () => {
+  try {
+    return localStorage.getItem(HIDE_KEY) === "1";
+  } catch (err) {
+    return false; // private mode: default to showing the maths
+  }
+};
+const writeHidden = (v) => {
+  try {
+    localStorage.setItem(HIDE_KEY, v ? "1" : "0");
+  } catch (err) {
+    /* the setting just won't survive a reload */
+  }
+};
 
 /* The two regulars. Everything head-to-head keys off these names,
    matched case-insensitively so "caleb" and "Caleb" are one person. */
@@ -126,6 +144,21 @@ const num = (v) => {
 const comboKey = (cards) => ANIMALS.map((a) => cards[a.key]).join("");
 const pairKey = (i, j, li, lj) => `${i}${j}${li}${lj}`;
 const comboLabel = (cards) => comboKey(cards).split("").join("·");
+
+/* Everyone who has sat at the table before, most games first — the order the
+   name dropdown offers them in. Regulars stay on the list before their first
+   game so the very first log has something to pick from. */
+function nameRoster(people) {
+  const seen = new Set(people.map((p) => p.key));
+  return [
+    ...people.map((p) => ({ key: p.key, name: displayName(p.name), games: p.games })),
+    ...REGULARS.filter((r) => !seen.has(r.key)).map((r) => ({
+      key: r.key,
+      name: r.label,
+      games: 0,
+    })),
+  ];
+}
 
 function emptyPlayer(name) {
   return {
@@ -379,6 +412,15 @@ const METRICS = [
     label: "Highest total maps + bonuses",
     get: (r) => r.landscapeTotal,
   },
+  /* The five majority bonuses added up. What a sheet can hold depends on who
+     is at the table — 2 a habitat solo or heads-up, 3 once a third sits down —
+     so the record carries the player count with it. */
+  {
+    key: "bonus",
+    label: "Highest majority bonuses",
+    get: (r) => r.bonus,
+    tag: (r) => `${r.players}p`,
+  },
   { key: "nature", label: "Most pinecones", get: (r) => r.nature },
   {
     key: "margin",
@@ -421,6 +463,7 @@ const RECORD_FIELDS = [
   ["wildlife"],
   ["landscape"],
   ["landscapeTotal", "Highest maps + bonuses"],
+  ["bonus", "Highest majority bonuses"],
   ["single", "Biggest single landscape"],
   ["nature"],
 ].map(([key, label]) => ({ ...METRIC[key], label: label || METRIC[key].label }));
@@ -522,6 +565,47 @@ function recordsBroken(rows, records) {
   return out;
 }
 
+/* The most games logged on one date, and who was there for it. A day at the
+   table rather than a score, so Mega C counts. Level days go to whichever came
+   first — a record is taken by beating it, not by matching it. */
+function busiestDay(games) {
+  const byDate = new Map();
+  games.forEach((g) => {
+    if (!byDate.has(g.date)) byDate.set(g.date, { date: g.date, n: 0, who: new Map() });
+    const d = byDate.get(g.date);
+    d.n++;
+    (g.players || []).forEach((pl) => {
+      const k = nameKey(pl.name);
+      if (k && !d.who.has(k)) d.who.set(k, displayName(pl.name));
+    });
+  });
+  let best = null;
+  [...byDate.values()]
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .forEach((d) => {
+      if (!best || d.n > best.n) best = d;
+    });
+  return best ? { date: best.date, n: best.n, who: [...best.who.values()] } : null;
+}
+
+/* One slice of the head-to-head series — the two of them cut by table size or
+   by Mega C. Who beat whom, which is the head-to-head question even when a
+   guest won the game outright. */
+function h2hSplit(list) {
+  const s = {
+    games: 0,
+    ties: 0,
+    wins: Object.fromEntries(REGULARS.map((r) => [r.key, 0])),
+  };
+  list.forEach(({ seats }) => {
+    s.games++;
+    const leaders = winnersOf(seats);
+    if (leaders.length > 1) s.ties++;
+    else s.wins[seats[leaders[0]].key]++;
+  });
+  return s;
+}
+
 function buildStats(games) {
   const rows = buildRows(games);
   /* Mega C games still count for wins and for combo coverage, but every
@@ -597,6 +681,41 @@ function buildStats(games) {
     REGULARS.map((r) => [r.key, h2h.scored ? h2h.points[r.key] / h2h.scored : 0])
   );
 
+  /* The series cut four ways. Every game counts for these, Mega C included,
+     because they are win-loss figures rather than score ones. */
+  h2h.splits = [
+    ["duel", "Just the two of you", (g) => g.seats[0].players === 2],
+    ["guests", "With a guest at the table", (g) => g.seats[0].players > 2],
+    ["normal", "Normal games", (g) => !g.seats[0].megaC],
+    ["mega", "Mega C", (g) => g.seats[0].megaC],
+  ].map(([key, label, keep]) => ({
+    key,
+    label,
+    ...h2hSplit(h2hGames.filter(keep)),
+  }));
+
+  /* Level on points, split by pinecones. Not a tie in the record — but the
+     closest a game gets to one, and worth counting. */
+  h2h.tiebreak = h2hGames.filter(
+    ({ seats }) => seats[0].total === seats[1].total && seats[0].nature !== seats[1].nature
+  ).length;
+
+  /* How comfortable each of their wins tends to be. Score-based, so Mega C
+     sits it out; a win taken on pinecones is a margin of nothing. */
+  const marg = Object.fromEntries(REGULARS.map((r) => [r.key, { n: 0, sum: 0 }]));
+  h2hGames.forEach(({ seats }) => {
+    if (seats[0].megaC) return;
+    const leaders = winnersOf(seats);
+    if (leaders.length > 1) return;
+    const won = seats[leaders[0]];
+    const lost = seats.find((_, i) => i !== leaders[0]);
+    marg[won.key].n++;
+    marg[won.key].sum += won.total - lost.total;
+  });
+  h2h.winMargin = Object.fromEntries(
+    REGULARS.map((r) => [r.key, marg[r.key].n ? marg[r.key].sum / marg[r.key].n : null])
+  );
+
   /* Per-player season line, including guests. */
   const people = new Map();
   rows.forEach((r) => {
@@ -627,6 +746,7 @@ function buildStats(games) {
     megaCount: games.filter((g) => g.megaC).length,
     records,
     streaks: longestStreaks(rows),
+    day: busiestDay(games),
     h2h,
     people: [...people.values()].sort((a, b) => b.games - a.games),
   };
@@ -1282,6 +1402,12 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
   const { date, cards, players, megaC } = draft;
   const [saved, setSaved] = useState(false);
   const [reveal, setReveal] = useState(null);
+  const [hidden, setHidden] = useState(readHidden);
+
+  const hide = (v) => {
+    setHidden(v);
+    writeHidden(v);
+  };
 
   const setDate = (v) => setDraft((d) => ({ ...d, date: v }));
   const setCards = (v) => setDraft((d) => ({ ...d, cards: v }));
@@ -1293,6 +1419,11 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
   const timesPlayed = cov.comboCount.get(key) || 0;
   const scores = scoreGame(players);
   const leaders = winnersOf(scores);
+
+  const roster = useMemo(() => nameRoster(stats.people), [stats.people]);
+  /* Nobody sits down twice in the same game, so a name already in another
+     seat drops out of that seat's list. */
+  const taken = new Set(players.map((p) => nameKey(p.name)).filter(Boolean));
 
 
   const setCount = (n) => {
@@ -1440,21 +1571,36 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
               />
               <span>Mega C?</span>
             </label>
+            <label className="cs-hide">
+              <input
+                type="checkbox"
+                checked={hidden}
+                onChange={(e) => hide(e.target.checked)}
+              />
+              <span>Hide scores?</span>
+            </label>
           </div>
         </div>
 
         {players.map((p, i) => (
           <div className="cs-player" key={i}>
             <div className="cs-player-head">
-              <input
-                className="cs-name"
+              <NamePicker
                 value={p.name}
                 placeholder={`Player ${i + 1}`}
-                onFocus={(e) => e.target.select()}
-                onChange={(e) => patch(i, (q) => ({ ...q, name: e.target.value }))}
+                options={roster.filter(
+                  (o) => o.key === nameKey(p.name) || !taken.has(o.key)
+                )}
+                onChange={(v) => patch(i, (q) => ({ ...q, name: v }))}
               />
-              <span className={"cs-total" + (leaders.includes(i) ? " lead" : "")}>
-                {scores[i].total}
+              <span
+                className={
+                  "cs-total" +
+                  (hidden ? " hush" : leaders.includes(i) ? " lead" : "")
+                }
+                aria-label={hidden ? "Score hidden until the reveal" : undefined}
+              >
+                {hidden ? "?" : scores[i].total}
               </span>
             </div>
 
@@ -1497,10 +1643,12 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
                 value={p.nature}
                 onChange={(v) => patch(i, (q) => ({ ...q, nature: v }))}
               />
-              <p className="cs-break mono">
-                wildlife {scores[i].wildlife} · landscapes {scores[i].landscape} ·
-                majorities {scores[i].bonus} · pinecones {scores[i].nature}
-              </p>
+              {!hidden && (
+                <p className="cs-break mono">
+                  wildlife {scores[i].wildlife} · landscapes {scores[i].landscape} ·
+                  majorities {scores[i].bonus} · pinecones {scores[i].nature}
+                </p>
+              )}
             </div>
           </div>
         ))}
@@ -1508,6 +1656,11 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
         <button className="cs-save" onClick={save}>
           {saved ? "Recorded" : "Record this game"}
         </button>
+        {hidden && (
+          <p className="cs-mega-note">
+            Totals stay covered while you enter the sheets — they come out at the reveal.
+          </p>
+        )}
         {megaC && (
           <p className="cs-mega-note">
             Logged as Mega C: counts for the win-loss record and the combo, but is left
@@ -1516,6 +1669,87 @@ function LogGame({ cov, stats, draft, setDraft, onSave }) {
         )}
       </div>
     </section>
+  );
+}
+
+/*
+ * Type a name or pick one you have played with. The list is ordered by games
+ * played, so the usual suspects are at the top and a one-off guest is at the
+ * bottom — but the field stays free text, because a new name has to be
+ * typeable the first time.
+ */
+function NamePicker({ value, placeholder, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => {
+      if (wrap.current && !wrap.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [open]);
+
+  const current = nameKey(value);
+
+  return (
+    <div className="cs-namepick" ref={wrap}>
+      <input
+        className="cs-name"
+        value={value}
+        placeholder={placeholder}
+        onFocus={(e) => e.target.select()}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
+      />
+      <button
+        type="button"
+        className={"cs-namebtn" + (open ? " on" : "")}
+        aria-label="Choose someone who has played before"
+        aria-expanded={open}
+        disabled={!options.length}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <svg width="11" height="7" viewBox="0 0 11 7" aria-hidden="true">
+          <path
+            d="M1.5 1.5 5.5 5.5 9.5 1.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+
+      {open && (
+        <ul className="cs-namemenu" role="listbox">
+          {options.map((o) => {
+            const reg = regularFor(o.key);
+            return (
+              <li key={o.key}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={o.key === current}
+                  className={"cs-nameopt" + (o.key === current ? " on" : "")}
+                  onClick={() => {
+                    onChange(o.name);
+                    setOpen(false);
+                  }}
+                >
+                  <span style={reg ? { color: reg.color } : undefined}>{o.name}</span>
+                  <em className="mono">
+                    {o.games} game{o.games === 1 ? "" : "s"}
+                  </em>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1863,6 +2097,11 @@ function Stats({ games, cov, stats }) {
               : "—"
           }
         />
+        <Stat
+          label="Most in a day"
+          value={stats.day ? `${stats.day.n}` : "—"}
+          sub={stats.day ? `${stats.day.date} · ${stats.day.who.join(" · ")}` : "—"}
+        />
       </div>
 
       <div className="cs-panel">
@@ -1907,6 +2146,83 @@ function Stats({ games, cov, stats }) {
           </table>
         ) : (
           <p className="cs-legend">No games recorded yet.</p>
+        )}
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Head to head, in detail</h2>
+          <p className="cs-legend">
+            The games with both of them at the table, cut four ways — and it is who
+            beat whom, so a guest winning the game outright does not settle it. Wins
+            count every game; the margins are score-based, so Mega C sits those out.
+          </p>
+        </div>
+        {stats.h2h.games ? (
+          <>
+            <div className="cs-table-wrap">
+              <table className="cs-table mono">
+                <thead>
+                  <tr>
+                    <th className="cs-td-name">Series</th>
+                    <th>Games</th>
+                    {REGULARS.map((r) => (
+                      <th key={r.key} style={{ color: r.color }}>
+                        {r.label}
+                      </th>
+                    ))}
+                    <th>Ties</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.h2h.splits.map((sp) => (
+                    <tr key={sp.key}>
+                      <td className="cs-td-name">{sp.label}</td>
+                      <td>{sp.games}</td>
+                      {REGULARS.map((r) => (
+                        <td key={r.key}>
+                          {sp.games
+                            ? `${sp.wins[r.key]} · ${((sp.wins[r.key] / sp.games) * 100).toFixed(0)}%`
+                            : "–"}
+                        </td>
+                      ))}
+                      <td>{sp.games ? sp.ties : "–"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="cs-odds">
+              {REGULARS.map((r) => (
+                <div className="cs-odd" key={r.key}>
+                  <span className="cs-stat-label" style={{ color: r.color }}>
+                    {r.label} wins by
+                  </span>
+                  <span className="cs-odd-value mono">
+                    {stats.h2h.winMargin[r.key] === null
+                      ? "–"
+                      : `+${stats.h2h.winMargin[r.key].toFixed(1)}`}
+                  </span>
+                  <span className="cs-stat-sub">on average, when they win</span>
+                </div>
+              ))}
+              <div className="cs-odd">
+                <span className="cs-stat-label">Settled on pinecones</span>
+                <span className="cs-odd-value mono">{stats.h2h.tiebreak}</span>
+                <span className="cs-stat-sub">
+                  level on points, pinecones broke it
+                </span>
+              </div>
+              <div className="cs-odd">
+                <span className="cs-stat-label">Dead heats</span>
+                <span className="cs-odd-value mono">{stats.h2h.ties}</span>
+                <span className="cs-stat-sub">level on points and pinecones</span>
+              </div>
+            </div>
+          </>
+        ) : (
+          <p className="cs-legend">No games yet with both of them at the table.</p>
         )}
       </div>
 
@@ -2202,16 +2518,26 @@ const CSS = `
 .cs-segbtn { font-family: 'IBM Plex Mono', monospace; font-size: 12px; border: none; background: #fff; padding: 5px 9px; cursor: pointer; color: var(--ink-2); }
 .cs-segbtn.on { background: var(--ink); color: #fff; }
 
-.cs-mega { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; user-select: none; }
-.cs-mega input { width: 15px; height: 15px; accent-color: #35604A; cursor: pointer; margin: 0; }
+.cs-mega, .cs-hide { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; user-select: none; }
+.cs-mega input, .cs-hide input { width: 15px; height: 15px; accent-color: #35604A; cursor: pointer; margin: 0; }
 .cs-mega-note { font-size: 11px; color: var(--ink-2); margin: 8px 0 0; text-align: center; }
 .cs-megatag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #8A5A2B; border: 1px solid #E0C9A8; background: #FBF3E8; border-radius: 20px; padding: 2px 7px; }
 
 .cs-player { border-top: 1px solid var(--line); padding: 14px 0 4px; }
 .cs-player-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .cs-name { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 15px; border: none; border-bottom: 1px solid var(--line); background: none; padding: 2px 0; width: 130px; color: var(--ink); }
+.cs-namepick { position: relative; display: flex; align-items: center; gap: 2px; }
+.cs-namebtn { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; border-radius: 5px; background: none; color: var(--ink-2); cursor: pointer; }
+.cs-namebtn:hover:not(:disabled), .cs-namebtn.on { color: var(--ink); background: var(--paper); }
+.cs-namebtn:disabled { opacity: 0.25; cursor: default; }
+.cs-namemenu { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 190px; max-height: 244px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 24px rgba(22, 32, 28, 0.14); }
+.cs-nameopt { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; width: 100%; font: inherit; font-size: 14px; text-align: left; background: none; border: none; border-radius: 5px; padding: 6px 8px; color: var(--ink); cursor: pointer; }
+.cs-nameopt:hover, .cs-nameopt.on { background: var(--paper); }
+.cs-nameopt span { font-weight: 600; }
+.cs-nameopt em { font-style: normal; font-size: 11px; color: var(--ink-2); }
 .cs-total { margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 24px; font-weight: 600; color: var(--ink-2); }
 .cs-total.lead { color: #35604A; }
+.cs-total.hush { color: var(--line); }
 
 .cs-grid { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 6px; margin-bottom: 6px; }
 .cs-field { display: flex; flex-direction: column; gap: 3px; }
@@ -2360,6 +2686,9 @@ const CSS = `
 
 /* Stats ------------------------------------------------------------- */
 .cs-stats { display: flex; gap: 26px; flex-wrap: wrap; }
+.cs-odds { display: flex; flex-wrap: wrap; gap: 22px 32px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.cs-odd { display: flex; flex-direction: column; gap: 2px; }
+.cs-odd-value { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
 .cs-stat { display: flex; flex-direction: column; gap: 2px; }
 .cs-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); font-weight: 600; }
 .cs-stat-value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; }
