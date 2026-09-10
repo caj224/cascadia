@@ -588,24 +588,6 @@ function busiestDay(games) {
   return best ? { date: best.date, n: best.n, who: [...best.who.values()] } : null;
 }
 
-/* One slice of the head-to-head series — the two of them cut by table size or
-   by Mega C. Who beat whom, which is the head-to-head question even when a
-   guest won the game outright. */
-function h2hSplit(list) {
-  const s = {
-    games: 0,
-    ties: 0,
-    wins: Object.fromEntries(REGULARS.map((r) => [r.key, 0])),
-  };
-  list.forEach(({ seats }) => {
-    s.games++;
-    const leaders = winnersOf(seats);
-    if (leaders.length > 1) s.ties++;
-    else s.wins[seats[leaders[0]].key]++;
-  });
-  return s;
-}
-
 function buildStats(games) {
   const rows = buildRows(games);
   /* Mega C games still count for wins and for combo coverage, but every
@@ -679,41 +661,6 @@ function buildStats(games) {
 
   h2h.avg = Object.fromEntries(
     REGULARS.map((r) => [r.key, h2h.scored ? h2h.points[r.key] / h2h.scored : 0])
-  );
-
-  /* The series cut four ways. Every game counts for these, Mega C included,
-     because they are win-loss figures rather than score ones. */
-  h2h.splits = [
-    ["duel", "Just the two of you", (g) => g.seats[0].players === 2],
-    ["guests", "With a guest at the table", (g) => g.seats[0].players > 2],
-    ["normal", "Normal games", (g) => !g.seats[0].megaC],
-    ["mega", "Mega C", (g) => g.seats[0].megaC],
-  ].map(([key, label, keep]) => ({
-    key,
-    label,
-    ...h2hSplit(h2hGames.filter(keep)),
-  }));
-
-  /* Level on points, split by pinecones. Not a tie in the record — but the
-     closest a game gets to one, and worth counting. */
-  h2h.tiebreak = h2hGames.filter(
-    ({ seats }) => seats[0].total === seats[1].total && seats[0].nature !== seats[1].nature
-  ).length;
-
-  /* How comfortable each of their wins tends to be. Score-based, so Mega C
-     sits it out; a win taken on pinecones is a margin of nothing. */
-  const marg = Object.fromEntries(REGULARS.map((r) => [r.key, { n: 0, sum: 0 }]));
-  h2hGames.forEach(({ seats }) => {
-    if (seats[0].megaC) return;
-    const leaders = winnersOf(seats);
-    if (leaders.length > 1) return;
-    const won = seats[leaders[0]];
-    const lost = seats.find((_, i) => i !== leaders[0]);
-    marg[won.key].n++;
-    marg[won.key].sum += won.total - lost.total;
-  });
-  h2h.winMargin = Object.fromEntries(
-    REGULARS.map((r) => [r.key, marg[r.key].n ? marg[r.key].sum / marg[r.key].n : null])
   );
 
   /* Per-player season line, including guests. */
@@ -2151,83 +2098,6 @@ function Stats({ games, cov, stats }) {
 
       <div className="cs-panel">
         <div className="cs-panel-head">
-          <h2>Head to head, in detail</h2>
-          <p className="cs-legend">
-            The games with both of them at the table, cut four ways — and it is who
-            beat whom, so a guest winning the game outright does not settle it. Wins
-            count every game; the margins are score-based, so Mega C sits those out.
-          </p>
-        </div>
-        {stats.h2h.games ? (
-          <>
-            <div className="cs-table-wrap">
-              <table className="cs-table mono">
-                <thead>
-                  <tr>
-                    <th className="cs-td-name">Series</th>
-                    <th>Games</th>
-                    {REGULARS.map((r) => (
-                      <th key={r.key} style={{ color: r.color }}>
-                        {r.label}
-                      </th>
-                    ))}
-                    <th>Ties</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.h2h.splits.map((sp) => (
-                    <tr key={sp.key}>
-                      <td className="cs-td-name">{sp.label}</td>
-                      <td>{sp.games}</td>
-                      {REGULARS.map((r) => (
-                        <td key={r.key}>
-                          {sp.games
-                            ? `${sp.wins[r.key]} · ${((sp.wins[r.key] / sp.games) * 100).toFixed(0)}%`
-                            : "–"}
-                        </td>
-                      ))}
-                      <td>{sp.games ? sp.ties : "–"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="cs-odds">
-              {REGULARS.map((r) => (
-                <div className="cs-odd" key={r.key}>
-                  <span className="cs-stat-label" style={{ color: r.color }}>
-                    {r.label} wins by
-                  </span>
-                  <span className="cs-odd-value mono">
-                    {stats.h2h.winMargin[r.key] === null
-                      ? "–"
-                      : `+${stats.h2h.winMargin[r.key].toFixed(1)}`}
-                  </span>
-                  <span className="cs-stat-sub">on average, when they win</span>
-                </div>
-              ))}
-              <div className="cs-odd">
-                <span className="cs-stat-label">Settled on pinecones</span>
-                <span className="cs-odd-value mono">{stats.h2h.tiebreak}</span>
-                <span className="cs-stat-sub">
-                  level on points, pinecones broke it
-                </span>
-              </div>
-              <div className="cs-odd">
-                <span className="cs-stat-label">Dead heats</span>
-                <span className="cs-odd-value mono">{stats.h2h.ties}</span>
-                <span className="cs-stat-sub">level on points and pinecones</span>
-              </div>
-            </div>
-          </>
-        ) : (
-          <p className="cs-legend">No games yet with both of them at the table.</p>
-        )}
-      </div>
-
-      <div className="cs-panel">
-        <div className="cs-panel-head">
           <h2>Average sheet</h2>
           <p className="cs-legend">
             What a typical game looks like for each of them, whatever cards were out.
@@ -2686,9 +2556,6 @@ const CSS = `
 
 /* Stats ------------------------------------------------------------- */
 .cs-stats { display: flex; gap: 26px; flex-wrap: wrap; }
-.cs-odds { display: flex; flex-wrap: wrap; gap: 22px 32px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
-.cs-odd { display: flex; flex-direction: column; gap: 2px; }
-.cs-odd-value { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
 .cs-stat { display: flex; flex-direction: column; gap: 2px; }
 .cs-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); font-weight: 600; }
 .cs-stat-value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; }
