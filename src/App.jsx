@@ -1088,110 +1088,59 @@ function Home({ games, cov, stats, onPlay, onGo }) {
             </React.Fragment>
           ))}
         </div>
-      </section>
 
-      <section className="cs-panel">
-        <div className="cs-panel-head">
-          <h2>
-            {REGULARS[0].label} v {REGULARS[1].label}, two-player
-          </h2>
-          <p className="cs-legend">
-            {duel.games
-              ? `The ${duel.games} game${duel.games === 1 ? "" : "s"} with nobody else at the table.` +
-                (duel.games > duel.scored
-                  ? ` Scores skip ${duel.games - duel.scored} Mega C.`
-                  : "")
-              : "No two-player games between you yet."}
-          </p>
-        </div>
-        <div className="cs-duel">
-          <div className="cs-duel-score">
-            {REGULARS.map((r, i) => (
-              <React.Fragment key={r.key}>
-                {i === 1 && (
-                  <div className="cs-duel-mid">
-                    <span className="cs-duel-dash mono" aria-hidden="true">
-                      –
-                    </span>
-                    <span className="cs-duel-wlabel">
-                      wins
-                      {duel.ties
-                        ? ` · ${duel.ties} tie${duel.ties === 1 ? "" : "s"}`
-                        : ""}
-                    </span>
-                  </div>
-                )}
-                <div className="cs-duel-side">
-                  <span className="cs-duel-name" style={{ color: r.color }}>
-                    {r.label}
-                  </span>
-                  <span className="mono cs-duel-n" style={{ color: r.color }}>
-                    {duel.wins[r.key]}
-                  </span>
-                  <span className="cs-duel-meta mono">
-                    avg {duel.scored ? duel.avg[r.key].toFixed(1) : "–"} · best{" "}
-                    {duel.best[r.key] || "–"}
-                  </span>
-                </div>
-              </React.Fragment>
-            ))}
+        {/* The two cuts that used to be panels of their own, in small print. */}
+        <div className="cs-h2h-more">
+          <div className="cs-h2h-block">
+            <span className="cs-h2h-blabel">Two-player only</span>
+            <span className="cs-h2h-bsub">
+              {duel.games
+                ? `${duel.games} game${duel.games === 1 ? "" : "s"} with nobody else at the table` +
+                  (duel.games > duel.scored
+                    ? `, scores skip ${duel.games - duel.scored} Mega C`
+                    : "")
+                : "no games yet with just the two of you"}
+            </span>
+            <p className="cs-h2h-line">
+              <PairLine values={duel.wins} /> wins
+              {duel.ties ? ` · ${duel.ties} tie${duel.ties === 1 ? "" : "s"}` : ""}
+            </p>
+            <p className="cs-h2h-line mono">
+              avg {duel.scored ? duel.avg[REGULARS[0].key].toFixed(1) : "–"} –{" "}
+              {duel.scored ? duel.avg[REGULARS[1].key].toFixed(1) : "–"} · best{" "}
+              {duel.best[REGULARS[0].key] || "–"} – {duel.best[REGULARS[1].key] || "–"}
+            </p>
+            <p className="cs-h2h-line mono">{recentDuel(duel)}</p>
           </div>
-          <p className="cs-duel-last">{duelLine(duel)}</p>
-        </div>
-      </section>
 
-      <section className="cs-panel">
-        <div className="cs-panel-head">
-          <h2>Longest win streaks</h2>
-          <p className="cs-legend">
-            Wins back to back — the longest run each way, not how many wins in
-            all. A tie ends a run.
-          </p>
-        </div>
-        <div className="cs-streaks">
-          <div className="cs-streak-main">
-            <span className="cs-streak-label">Overall</span>
-            <span className="cs-streak-sub">best run by anyone, guests included</span>
-            {best ? (
-              <>
-                <span
-                  className="cs-streak-n mono"
-                  style={bestColour ? { color: bestColour } : undefined}
-                >
-                  {best.n}
-                </span>
-                <span className="cs-streak-who">
+          <div className="cs-h2h-block">
+            <span className="cs-h2h-blabel">Longest win streaks</span>
+            <span className="cs-h2h-bsub">
+              wins in a row, not totals — a tie ends a run
+            </span>
+            <p className="cs-h2h-line">
+              <PairLine values={h2h.longest} /> in a row, head to head
+              {h2h.longestLive && h2h.longest[h2h.longestLive] > 1 && (
+                <em className="cs-streak-live">live</em>
+              )}
+            </p>
+            <p className="cs-h2h-line">
+              {best ? (
+                <>
+                  <span className="mono">{best.n}</span> in a row overall by{" "}
                   <strong style={bestColour ? { color: bestColour } : undefined}>
                     {displayName(best.name)}
                   </strong>
-                  <span className="mono">
+                  <span className="mono cs-h2h-when">
                     {" · "}
                     {best.from === best.to ? best.from : `${best.from} → ${best.to}`}
                   </span>
                   {best.live && <em className="cs-streak-live">still going</em>}
-                </span>
-              </>
-            ) : (
-              <span className="cs-streak-who">no wins recorded yet</span>
-            )}
-          </div>
-
-          <div className="cs-streak-h2h">
-            <span className="cs-streak-label">Longest head-to-head run</span>
-            <span className="cs-streak-sub">
-              wins in a row in the series, not total wins
-            </span>
-            {REGULARS.map((r) => (
-              <div className="cs-streak-row" key={r.key}>
-                <span className="cs-streak-rname" style={{ color: r.color }}>
-                  {r.label}
-                </span>
-                <span className="mono cs-streak-rn">{h2h.longest[r.key] || "–"}</span>
-                {h2h.longestLive === r.key && h2h.longest[r.key] > 1 && (
-                  <em className="cs-streak-live">live</em>
-                )}
-              </div>
-            ))}
+                </>
+              ) : (
+                "no wins recorded yet"
+              )}
+            </p>
           </div>
         </div>
       </section>
@@ -1246,19 +1195,37 @@ function Home({ games, cov, stats, onPlay, onGo }) {
   );
 }
 
-/* How the last duel went, spelled out as a scoreline. Mega C games have no
-   score to report, so they say so instead. */
-function duelLine(duel) {
+/* The latest two-player game as a scoreline. A Mega C game has no score to
+   give, so it says how it went instead. */
+function recentDuel(duel) {
   const last = duel.last;
-  if (!last) return "Score a game with just the two of you and it lands here.";
+  if (!last) return "";
   const [a, b] = REGULARS;
+  const won = last.winner ? REGULARS.find((r) => r.key === last.winner).label : null;
   if (last.megaC)
-    return `Last time out, ${last.winner ? `${REGULARS.find((r) => r.key === last.winner).label} took a Mega C game` : "a Mega C game was tied"} · ${last.date}`;
-  const line = `${a.label} ${last.totals[a.key]} – ${last.totals[b.key]} ${b.label}`;
-  if (!last.winner) return `Last time out, a dead heat: ${line} · ${last.date}`;
-  const won = REGULARS.find((r) => r.key === last.winner).label;
-  const how = last.totals[a.key] === last.totals[b.key] ? " took it on pinecones" : " took it";
-  return `Last time out, ${won}${how}: ${line} · ${last.date}`;
+    return `Most recent: Mega C, ${won ? `${won} won` : "tied"} · ${last.date}`;
+  /* Level on points means pinecones settled it — or nothing did. */
+  const level =
+    last.totals[a.key] === last.totals[b.key]
+      ? won
+        ? `, ${won} on pinecones`
+        : ", dead heat"
+      : "";
+  return `Most recent: ${a.label} ${last.totals[a.key]} – ${last.totals[b.key]} ${b.label}${level} · ${last.date}`;
+}
+
+/* "Caleb 5 – 5 Allison" — the two regulars either side of a figure each. */
+function PairLine({ values }) {
+  const [a, b] = REGULARS;
+  return (
+    <span className="cs-h2h-pair">
+      <span style={{ color: a.color }}>{a.label}</span>{" "}
+      <span className="mono">{values[a.key] || 0}</span>
+      {" – "}
+      <span className="mono">{values[b.key] || 0}</span>{" "}
+      <span style={{ color: b.color }}>{b.label}</span>
+    </span>
+  );
 }
 
 /* What the middle of the head-to-head panel says under the game count. */
@@ -2445,18 +2412,17 @@ const CSS = `
 .cs-h2h-wlabel { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); font-weight: 600; }
 .cs-h2h-note { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); }
 
-/* Head to head, just the two of them */
-.cs-duel { display: flex; flex-direction: column; gap: 10px; }
-.cs-duel-score { display: flex; align-items: center; justify-content: center; gap: 18px; flex-wrap: wrap; }
-.cs-duel-side { flex: 1 1 130px; display: flex; flex-direction: column; gap: 2px; }
-.cs-duel-side:last-child { text-align: right; align-items: flex-end; }
-.cs-duel-name { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 800; font-size: 17px; }
-.cs-duel-n { font-size: 40px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
-.cs-duel-mid { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 0 6px; }
-.cs-duel-dash { font-size: 26px; color: var(--ink-2); line-height: 1; }
-.cs-duel-wlabel { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-2); font-weight: 600; white-space: nowrap; }
-.cs-duel-meta { font-size: 11px; color: var(--ink-2); }
-.cs-duel-last { margin: 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-2); text-align: center; }
+/* The small print under the head-to-head score: the two-player cut and the
+   longest runs, both of which used to be panels of their own. */
+.cs-h2h-more { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.cs-h2h-block { display: flex; flex-direction: column; gap: 1px; }
+.cs-h2h-blabel { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 600; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); }
+.cs-h2h-bsub { font-size: 11px; color: var(--ink-2); margin-bottom: 4px; }
+.cs-h2h-line { margin: 0; font-size: 12px; color: var(--ink-2); }
+.cs-h2h-line .mono { color: var(--ink); font-weight: 600; }
+.cs-h2h-pair span:not(.mono) { font-weight: 700; }
+.cs-h2h-line .cs-h2h-when { color: var(--ink-2); font-weight: 400; }
+.cs-streak-live { font-style: normal; font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; background: #35604A; color: #fff; border-radius: 4px; padding: 1px 4px; margin-left: 5px; }
 
 .cs-rec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
 .cs-rec-grid.tight { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
@@ -2525,26 +2491,12 @@ const CSS = `
 .cs-tail .cs-field { width: 120px; }
 .cs-break { font-size: 11px; color: var(--ink-2); margin: 0 0 6px; }
 
-/* Longest win streaks */
-.cs-streaks { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; align-items: stretch; }
-.cs-streak-main { display: flex; flex-direction: column; gap: 2px; background: var(--paper); border-radius: 10px; padding: 14px 16px; }
-.cs-streak-label { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 600; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); }
-.cs-streak-n { font-size: 40px; font-weight: 600; line-height: 1.05; }
-.cs-streak-sub { font-size: 11px; color: var(--ink-2); margin-bottom: 2px; }
-.cs-streak-who { font-size: 13px; color: var(--ink-2); }
-.cs-streak-who strong { font-size: 14px; color: var(--ink); }
-.cs-streak-live { font-style: normal; font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; background: #35604A; color: #fff; border-radius: 4px; padding: 2px 5px; margin-left: 6px; }
-.cs-streak-h2h { display: flex; flex-direction: column; gap: 4px; background: var(--paper); border-radius: 10px; padding: 14px 16px; }
-.cs-streak-row { display: flex; align-items: baseline; gap: 8px; }
-.cs-streak-rname { font-weight: 600; font-size: 14px; flex: 1; }
-.cs-streak-rn { font-size: 20px; font-weight: 600; }
 
 .cs-sound { display: inline-flex; align-items: center; gap: 7px; color: #35604A; }
 .cs-sound.off { color: var(--ink-2); }
 .cs-sound.off svg { opacity: 0.75; }
 
 @media (max-width: 620px) {
-  .cs-streaks { grid-template-columns: 1fr; }
 }
 
 /* Winner reveal */
@@ -2691,8 +2643,7 @@ const CSS = `
   .cs-usage-row { flex-direction: column; align-items: flex-start; }
   .cs-hero-value { font-size: 38px; }
   .cs-h2h-side { flex-basis: 100px; }
-  .cs-duel-side { flex-basis: 100px; }
-  .cs-duel-n { font-size: 34px; }
+  .cs-h2h-more { grid-template-columns: 1fr; gap: 14px; }
   .cs-suggest-letter { width: 40px; height: 50px; font-size: 19px; }
 }
 @media (prefers-reduced-motion: reduce) { .cs-root * { transition: none !important; animation: none !important; } }
