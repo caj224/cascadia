@@ -191,7 +191,17 @@ function newDraft() {
 /* Coverage math                                                       */
 /* ------------------------------------------------------------------ */
 
+/* The id of the game that first played each combo. Games arrive newest-first,
+   so the last one through for a combo is the oldest, and it keeps the
+   "first time" no matter how often the combo comes round again. */
+function firstPlays(games) {
+  const first = new Map();
+  games.forEach((g) => first.set(comboKey(g.cards), g.id));
+  return new Set(first.values());
+}
+
 function buildCoverage(games) {
+  const firsts = firstPlays(games);
   const played = new Set();
   const comboCount = new Map();
   const cardCount = Object.fromEntries(
@@ -217,7 +227,14 @@ function buildCoverage(games) {
   });
 
   // games arrive newest-first, so games[0] is the last one played.
-  return { played, comboCount, cardCount, pairs, last: games.length ? games[0].cards : null };
+  return {
+    played,
+    comboCount,
+    firsts,
+    cardCount,
+    pairs,
+    last: games.length ? games[0].cards : null,
+  };
 }
 
 function suggestCombo(cov) {
@@ -472,6 +489,14 @@ const RECORD_FIELDS = [
    that only a contested game has. */
 const REVEAL_FIELDS = [...RECORD_FIELDS, METRIC.margin];
 
+/* The per-animal and per-habitat records from the Stats page. The reveal
+   announces these when broken but leaves them off its top-five list, which
+   would otherwise run to a dozen lines a game. */
+const DETAIL_RECORD_FIELDS = [
+  ...ANIMAL_METRICS.map((m) => ({ ...m, label: `Highest ${m.label.toLowerCase()}` })),
+  ...HABITAT_METRICS.map((m) => ({ ...m, label: `Biggest ${m.label.toLowerCase()} run` })),
+];
+
 /* A player-game, which is what holds a record. */
 const rowId = (r) => `${r.gameId}:${r.seat}`;
 
@@ -544,13 +569,14 @@ function recordsBroken(rows, records) {
   if (!rows.length || rows[0].megaC) return [];
   const out = [];
 
-  RECORD_FIELDS.forEach((f) => {
+  [...RECORD_FIELDS, ...DETAIL_RECORD_FIELDS].forEach((f) => {
     let row = null;
     rows.forEach((r) => {
       if (row === null || f.get(r) > f.get(row)) row = r;
     });
     const value = f.get(row);
-    const prev = records[f.key] ? records[f.key].value : null;
+    const rec = recOf(records, f);
+    const prev = rec ? rec.value : null;
     if (value > 0 && (prev === null || value > prev))
       out.push({ label: f.label, value, prev, name: row.name });
   });
@@ -648,14 +674,20 @@ function buildStats(games) {
     if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
     byGame.get(r.gameId).push(r);
   });
+  /* Only a combo's first outing counts toward the series. A combo played again
+     is a rematch on known ground, so those games are tallied on their own and
+     shown in small print instead. */
+  const firsts = firstPlays(games);
   const h2hGames = [];
+  const repeatGames = [];
   byGame.forEach((rs, id) => {
     const seats = REGULARS.map((reg) => rs.find((r) => r.key === reg.key));
     if (seats.some((s) => !s)) return;
-    h2hGames.push({ id, seats, date: seats[0].date });
+    (firsts.has(id) ? h2hGames : repeatGames).push({ id, seats, date: seats[0].date });
   });
   // byGame preserves rows order, which is games order: newest first.
   const h2h = h2hSeries(h2hGames);
+  h2h.repeats = h2hSeries(repeatGames);
   /* The same series with nobody else at the table: the two-player duel. */
   h2h.duel = h2hSeries(h2hGames.filter(({ seats }) => seats[0].players === 2));
 
@@ -695,6 +727,8 @@ function buildStats(games) {
         ties: 0,
         scored: 0,
         sum: 0,
+        wildSum: 0,
+        mapSum: 0,
         best: 0,
       });
     const p = people.get(r.key);
@@ -704,6 +738,8 @@ function buildStats(games) {
     if (r.megaC) return;
     p.scored++;
     p.sum += r.total;
+    p.wildSum += r.wildlife;
+    p.mapSum += r.landscape;
     if (r.total > p.best) p.best = r.total;
   });
 
@@ -773,8 +809,28 @@ function cardMeans(rows, playerKey) {
   return { acc, bestCard };
 }
 
+/* Highest single-game score on each scoring card, every player. Uses the
+   same tie-break as the records: oldest first, so matching a score does not
+   take it. Empty cells (card never scored) are null. */
+function cardHighs(rows) {
+  return Object.fromEntries(
+    ANIMALS.map((a) => [
+      a.key,
+      Object.fromEntries(
+        CARDS.map((c) => [
+          c,
+          recordFor(
+            rows.filter((r) => r.cards[a.key] === c),
+            (r) => r.animals[a.key]
+          ),
+        ])
+      ),
+    ])
+  );
+}
+
 /* ------------------------------------------------------------------ */
-/* Hex primitive — the header mark                                     */
+/* Hex primitive — the header mark                                    */
 /* ------------------------------------------------------------------ */
 
 function hexPoints(cx, cy, r) {
@@ -1051,7 +1107,7 @@ function Home({ games, cov, stats, onPlay, onGo }) {
           <h2>Head to head</h2>
           <p className="cs-legend">
             {h2h.games
-              ? `${h2h.games} game${h2h.games === 1 ? "" : "s"} with both of you at the table.` +
+              ? `${h2h.games} game${h2h.games === 1 ? "" : "s"} with both of you at the table, first plays of a combo only.` +
                 (h2h.games > h2h.scored
                   ? ` Averages skip ${h2h.games - h2h.scored} Mega C.`
                   : "")
@@ -1143,6 +1199,15 @@ function Home({ games, cov, stats, onPlay, onGo }) {
             </p>
           </div>
         </div>
+
+        {h2h.repeats.games > 0 && (
+          <p className="cs-h2h-repeat">
+            Repeat combos: <PairLine values={h2h.repeats.wins} />
+            {h2h.repeats.ties
+              ? ` · ${h2h.repeats.ties} tie${h2h.repeats.ties === 1 ? "" : "s"}`
+              : ""}
+          </p>
+        )}
       </section>
 
       <section className="cs-panel">
@@ -1958,7 +2023,7 @@ function GamesList({ games, cov, onDelete }) {
         const top = winnersOf(s);
         const winner = g.players[top[0]];
         const best = s[top[0]].total;
-        const first = cov.comboCount.get(comboKey(g.cards)) === 1;
+        const first = cov.firsts.has(g.id);
         const tied = top.length > 1;
         return (
           <div className="cs-game" key={g.id}>
@@ -2083,6 +2148,7 @@ function Stats({ games, cov, stats }) {
     [rows, who]
   );
   const avg = useMemo(() => playerMeans(rows), [rows]);
+  const highs = useMemo(() => cardHighs(rows), [rows]);
   const pct = (cov.played.size / TOTAL_COMBOS) * 100;
 
   return (
@@ -2120,6 +2186,7 @@ function Stats({ games, cov, stats }) {
           </p>
         </div>
         {stats.people.length ? (
+          <div className="cs-table-wrap">
           <table className="cs-table mono cs-people">
             <thead>
               <tr>
@@ -2129,6 +2196,8 @@ function Stats({ games, cov, stats }) {
                 <th>Ties</th>
                 <th>Win %</th>
                 <th>Avg</th>
+                <th>Avg animals</th>
+                <th>Avg maps</th>
                 <th>Best</th>
               </tr>
             </thead>
@@ -2145,12 +2214,15 @@ function Stats({ games, cov, stats }) {
                     <td>{p.ties}</td>
                     <td>{((p.wins / p.games) * 100).toFixed(0)}%</td>
                     <td>{p.scored ? (p.sum / p.scored).toFixed(1) : "–"}</td>
+                    <td>{p.scored ? (p.wildSum / p.scored).toFixed(1) : "–"}</td>
+                    <td>{p.scored ? (p.mapSum / p.scored).toFixed(1) : "–"}</td>
                     <td className="cs-td-total">{p.scored ? p.best : "–"}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          </div>
         ) : (
           <p className="cs-legend">No games recorded yet.</p>
         )}
@@ -2218,6 +2290,54 @@ function Stats({ games, cov, stats }) {
 
         <h3 className="cs-subhead">Biggest run of each type</h3>
         <RecordGrid list={HABITAT_METRICS} records={stats.records} onOpen={openRecord} tight />
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Highest score per card</h2>
+        </div>
+        <p className="cs-legend cs-legend-wide">
+          The best single-game score on each scoring card, and who got it. All players,
+          Mega C excluded. A tied score stays with whoever got there first.
+        </p>
+        <div className="cs-meantable-wrap">
+          <table className="cs-table mono cs-meantable cs-cardhigh">
+            <thead>
+              <tr>
+                <th />
+                {CARDS.map((c) => (
+                  <th key={c}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ANIMALS.map((a) => (
+                <tr key={a.key}>
+                  <td className="cs-td-name" style={{ color: a.color }}>
+                    {a.label}
+                  </td>
+                  {CARDS.map((c) => {
+                    const hi = highs[a.key][c];
+                    const reg = hi && regularFor(hi.row.name);
+                    return (
+                      <td key={c} className={hi ? "" : "cs-td-none"}>
+                        {hi ? hi.value : "–"}
+                        {hi && (
+                          <span
+                            className="cs-cardhigh-who"
+                            style={reg ? { color: reg.color } : undefined}
+                          >
+                            {displayName(hi.row.name)}
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="cs-panel">
@@ -2421,6 +2541,8 @@ const CSS = `
 .cs-h2h-line { margin: 0; font-size: 12px; color: var(--ink-2); }
 .cs-h2h-line .mono { color: var(--ink); font-weight: 600; }
 .cs-h2h-pair span:not(.mono) { font-weight: 700; }
+.cs-h2h-repeat { margin: 12px 0 0; padding-top: 10px; border-top: 1px dashed var(--line); font-size: 11px; color: var(--ink-2); }
+.cs-h2h-repeat .mono { color: var(--ink); font-weight: 600; }
 .cs-h2h-line .cs-h2h-when { color: var(--ink-2); font-weight: 400; }
 .cs-streak-live { font-style: normal; font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 700; font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; background: #35604A; color: #fff; border-radius: 4px; padding: 1px 4px; margin-left: 5px; }
 
@@ -2611,7 +2733,9 @@ const CSS = `
 .cs-td-none { color: #C3CBC2; }
 .cs-td-best { background: #E7F0E7; color: #24503A; font-weight: 600; border-radius: 4px; }
 .cs-n { font-style: normal; font-size: 8px; color: var(--ink-2); margin-left: 3px; vertical-align: super; }
-.cs-people { max-width: 520px; }
+.cs-people { max-width: 640px; }
+.cs-cardhigh td { vertical-align: top; }
+.cs-cardhigh-who { display: block; font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-size: 9px; font-weight: 600; color: var(--ink-2); white-space: nowrap; margin-top: 1px; }
 
 /* Stats ------------------------------------------------------------- */
 .cs-stats { display: flex; gap: 26px; flex-wrap: wrap; }
