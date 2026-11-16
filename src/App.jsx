@@ -17,9 +17,9 @@ const ANIMALS = [
 const HABITATS = [
   { key: "mountain", label: "Mountains", color: "#6E7C8A" },
   { key: "forest", label: "Peas", color: "#35604A" },
-  { key: "prairie", label: "Prairie", color: "#C0A040" },
+  { key: "prairie", label: "Desert", color: "#C0A040" },
   { key: "wetland", label: "Moss", color: "#7C8A47" },
-  { key: "river", label: "River", color: "#4E7FA8" },
+  { key: "river", label: "Ocean", color: "#4E7FA8" },
 ];
 
 const CARDS = ["A", "B", "C", "D", "E", "F", "G"];
@@ -178,9 +178,17 @@ function defaultPlayers() {
   return SEAT_DEFAULTS.map(emptyPlayer);
 }
 
+/* Today as YYYY-MM-DD on this device's clock. toISOString() would give the
+   UTC date, which rolls over to tomorrow in the evening in the Americas. */
+function localToday() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function newDraft() {
   return {
-    date: new Date().toISOString().slice(0, 10),
+    date: localToday(),
     cards: Object.fromEntries(ANIMALS.map((a) => [a.key, "A"])),
     players: defaultPlayers(),
     megaC: false,
@@ -909,7 +917,7 @@ export default function CascadiaTracker() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `cascadia-log-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `cascadia-log-${localToday()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };

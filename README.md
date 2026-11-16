@@ -19,7 +19,7 @@ Four pages:
 The two regulars are set by `REGULARS` in `src/App.jsx`. Names are matched
 case-insensitively, so "caleb" and "Caleb" count as one person.
 
-Habitat tiles are labelled Mountain, Peas, Grass, Prairie and River, and the tokens are
+Habitat tiles are labelled Mountains, Peas, Desert, Moss and Ocean, and the tokens are
 pinecones. The labels live in `HABITATS`; the underlying storage keys are unchanged
 (`forest`, `wetland`, `nature`) so older logs and exports still import cleanly.
 
