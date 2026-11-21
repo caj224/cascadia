@@ -50,7 +50,6 @@ const SAMPLE_GAIN = 0.9;
 
 let ctx = null;
 let noise = null;
-let kicked = false;
 
 function readMuted() {
   try {
@@ -91,15 +90,7 @@ function audio() {
   if (muted) return null;
   const ac = ensureCtx();
   if (!ac) return null;
-  /* Anything short of "running" is resumed, not just "suspended": Safari parks
-     the context in "interrupted" when it takes the audio session back after a
-     clip finishes, and it never leaves that state on its own. A context that
-     went away also has to be woken by unlock() again before it makes a sound,
-     so the kick is armed here rather than fired once for the life of the tab. */
-  if (ac.state !== "running") {
-    kicked = false;
-    ac.resume();
-  }
+  if (ac.state === "suspended") ac.resume();
   return ac;
 }
 
@@ -108,7 +99,15 @@ function audio() {
    is ever recorded. Failures are swallowed: the synth is always there. */
 function preload() {
   if (loading || !HAS_FILES) return loading;
-  const ac = ensureCtx();
+  /* Decoded on an offline context of its own, so unlock() swapping the live
+     context out mid-decode can never cost a sample. */
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  let ac = null;
+  try {
+    ac = OAC ? new OAC(1, 1, 44100) : ensureCtx();
+  } catch (err) {
+    ac = ensureCtx();
+  }
   if (!ac) return null;
   loading = Promise.all(
     Object.keys(SAMPLE_URL).map((role) =>
@@ -161,18 +160,36 @@ export function hushFanfare(seconds = 0.18) {
 /*
  * Call from inside a tap before anything is scheduled.
  *
- * resume() alone is not always enough on iOS — the context reports "running"
- * but stays silent until a buffer has actually been played inside a gesture.
- * Starting a one-sample silent buffer here is the standard way to force it.
+ * Every call throws the old context away and starts a new one. Once a clip
+ * has played, iOS Safari takes the audio session back and leaves that context
+ * "interrupted" or quietly dead — sometimes still claiming to be "running" —
+ * and resume() does not reliably bring it back, which is why sound used to
+ * stop after the first game until a reload. A context made inside a tap
+ * starts live, and decoded AudioBuffers are not tied to the context that
+ * decoded them, so the samples carry straight over.
+ *
+ * The new context is then kicked with a one-sample silent buffer, because iOS
+ * can also report "running" yet stay silent until something actually plays
+ * inside the gesture.
  */
 export function unlock() {
+  if (muted) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  hushFanfare(0.02);
+  const old = ctx;
+  try {
+    ctx = new AC();
+  } catch (err) {
+    ctx = old; // could not make another; carry on with what we had
+  }
+  if (old && old !== ctx) old.close().catch(() => {});
   const ac = audio();
-  if (!ac || kicked) return;
+  if (!ac) return;
   const src = ac.createBufferSource();
   src.buffer = ac.createBuffer(1, 1, 22050);
   src.connect(ac.destination);
   src.start(0);
-  kicked = true;
 }
 
 /* Whether audio is actually able to play, for the UI to warn about. */
