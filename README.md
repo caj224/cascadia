@@ -13,7 +13,7 @@ Four pages:
   Habitat majorities are computed for you. Defaults to Allison and Caleb. Saving a
   multiplayer game plays a drumroll and announces the winner.
 - **Stats** — every player's record, all single-game highs, the average score for each
-  card (all players, or one), the pairing lattice, and card usage.
+  card (all players, Caleb and Allison together, or one), Caleb vs Allison win % per card, the pairing lattice, and card usage.
 - **Log** — every game recorded, newest first. Tap one to see the full sheet.
 
 The two regulars are set by `REGULARS` in `src/App.jsx`. Names are matched

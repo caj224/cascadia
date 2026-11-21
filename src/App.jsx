@@ -696,6 +696,7 @@ function buildStats(games) {
   // byGame preserves rows order, which is games order: newest first.
   const h2h = h2hSeries(h2hGames);
   h2h.repeats = h2hSeries(repeatGames);
+  h2h.byCard = cardDuels(h2hGames.filter(({ seats }) => !seats[0].megaC));
   /* The same series with nobody else at the table: the two-player duel. */
   h2h.duel = h2hSeries(h2hGames.filter(({ seats }) => seats[0].players === 2));
 
@@ -790,12 +791,14 @@ const mean1 = (v) => (v === null ? "–" : v.toFixed(1));
 
 /* Mean wildlife points scored on each scoring card, optionally for one
    player. `min` guards against a single lucky game defining "best". */
-function cardMeans(rows, playerKey) {
+/* who: "all" is every seat logged, "both" is the two regulars together,
+   anything else is one regular's key. */
+function cardMeans(rows, who) {
   const acc = Object.fromEntries(
     ANIMALS.map((a) => [a.key, Object.fromEntries(CARDS.map((c) => [c, { n: 0, sum: 0 }]))])
   );
   rows.forEach((r) => {
-    if (playerKey && r.key !== playerKey) return;
+    if (who === "both" ? !regularFor(r.name) : who !== "all" && r.key !== who) return;
     ANIMALS.forEach((a) => {
       const cell = acc[a.key][r.cards[a.key]];
       if (!cell) return;
@@ -815,6 +818,35 @@ function cardMeans(rows, playerKey) {
     bestCard[a.key] = win;
   });
   return { acc, bestCard };
+}
+
+/* Caleb vs Allison on each scoring card: the head-to-head series (first plays
+   of a combo only) where that card was out, Mega C left out. Who finished
+   ahead of whom, even if a guest won. */
+function cardDuels(games) {
+  const acc = Object.fromEntries(
+    ANIMALS.map((a) => [
+      a.key,
+      Object.fromEntries(
+        CARDS.map((c) => [
+          c,
+          { n: 0, ties: 0, wins: Object.fromEntries(REGULARS.map((r) => [r.key, 0])) },
+        ])
+      ),
+    ])
+  );
+  games.forEach(({ seats }) => {
+    const leaders = winnersOf(seats).map((i) => seats[i]);
+    const winner = leaders.length > 1 ? null : leaders[0].key;
+    ANIMALS.forEach((a) => {
+      const cell = acc[a.key][seats[0].cards[a.key]];
+      if (!cell) return;
+      cell.n++;
+      if (winner) cell.wins[winner]++;
+      else cell.ties++;
+    });
+  });
+  return acc;
 }
 
 /* Highest single-game score on each scoring card, every player. Uses the
@@ -2148,11 +2180,11 @@ function GamesList({ games, cov, onDelete }) {
 /* ------------------------------------------------------------------ */
 
 function Stats({ games, cov, stats }) {
-  const [who, setWho] = useState("all"); // "all" | a regular's key
+  const [who, setWho] = useState("both"); // "all" | "both" | a regular's key
   const rows = stats.scored;
   const [openRecord, recordDetail] = useRecordDetail(games, rows);
   const means = useMemo(
-    () => cardMeans(rows, who === "all" ? null : who),
+    () => cardMeans(rows, who),
     [rows, who]
   );
   const avg = useMemo(() => playerMeans(rows), [rows]);
@@ -2353,7 +2385,7 @@ function Stats({ games, cov, stats }) {
           <h2>Average score per card</h2>
           <div className="cs-actions">
             <div className="cs-seg">
-              {[["all", "Both"], ...REGULARS.map((r) => [r.key, r.label])].map(([k, label]) => (
+              {[["all", "All"], ["both", "Both"], ...REGULARS.map((r) => [r.key, r.label])].map(([k, label]) => (
                 <button
                   key={k}
                   className={"cs-segbtn" + (who === k ? " on" : "")}
@@ -2366,8 +2398,10 @@ function Stats({ games, cov, stats }) {
           </div>
         </div>
         <p className="cs-legend cs-legend-wide">
-          Mean wildlife points scored while each card was in play. The green cell is the
-          best card for that animal; the small number is how many games it is based on.
+          Mean wildlife points scored while each card was in play. All is every player,
+          guests included; Both is {REGULARS.map((r) => r.label).join(" and ")} only. The
+          green cell is the best card for that animal; the small number is how many games
+          it is based on.
         </p>
         <div className="cs-meantable-wrap">
           <table className="cs-table mono cs-meantable">
@@ -2409,6 +2443,68 @@ function Stats({ games, cov, stats }) {
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>{REGULARS.map((r) => r.label).join(" vs ")} per card</h2>
+        </div>
+        <p className="cs-legend cs-legend-wide">
+          Win percentage in games where each card was out and both of you played, first
+          plays of a combo only, Mega C excluded. Shows whoever leads on that card and
+          their record; a tied game counts as a win for neither. The small number is games.
+        </p>
+        <div className="cs-meantable-wrap">
+          <table className="cs-table mono cs-meantable cs-cardhigh">
+            <thead>
+              <tr>
+                <th />
+                {CARDS.map((c) => (
+                  <th key={c}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ANIMALS.map((a) => (
+                <tr key={a.key}>
+                  <td className="cs-td-name" style={{ color: a.color }}>
+                    {a.label}
+                  </td>
+                  {CARDS.map((c) => {
+                    const cell = stats.h2h.byCard[a.key][c];
+                    if (!cell.n)
+                      return (
+                        <td key={c} className="cs-td-none">
+                          –
+                        </td>
+                      );
+                    const [r1, r2] = REGULARS;
+                    const w1 = cell.wins[r1.key];
+                    const w2 = cell.wins[r2.key];
+                    const lead = w1 > w2 ? r1 : w2 > w1 ? r2 : null;
+                    const lw = lead ? cell.wins[lead.key] : w1;
+                    return (
+                      <td key={c}>
+                        <span style={lead ? { color: lead.color } : undefined}>
+                          {((lw / cell.n) * 100).toFixed(0)}%
+                        </span>
+                        <em className="cs-n">{cell.n}</em>
+                        <span
+                          className="cs-cardhigh-who"
+                          style={lead ? { color: lead.color } : undefined}
+                        >
+                          {lead
+                            ? `${lead.label} ${lw}–${cell.wins[(lead === r1 ? r2 : r1).key]}`
+                            : `Even ${w1}–${w2}`}
+                        </span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
