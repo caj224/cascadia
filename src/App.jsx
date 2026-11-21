@@ -764,11 +764,19 @@ function buildStats(games) {
   };
 }
 
-/* What an average game looks like for each regular: mean points per animal
-   whatever card was out, and the mean of each block of the sheet. Mega C rows
-   are already out of `rows`, so nothing here has to filter them. */
+/* What an average game looks like for each player: mean points per animal
+   whatever card was out, and the mean of each block of the sheet. The regulars
+   come first, then guests by games played. Mega C rows are already out of
+   `rows`, so nothing here has to filter them. */
 function playerMeans(rows) {
-  return REGULARS.map((reg) => {
+  const guests = new Map();
+  rows.forEach((r) => {
+    if (regularFor(r.name)) return;
+    if (!guests.has(r.key)) guests.set(r.key, { key: r.key, label: r.name, color: undefined, n: 0 });
+    guests.get(r.key).n++;
+  });
+  const everyone = [...REGULARS, ...[...guests.values()].sort((x, y) => y.n - x.n)];
+  return everyone.map((reg) => {
     const mine = rows.filter((r) => r.key === reg.key);
     const mean = (get) =>
       mine.length ? mine.reduce((sum, r) => sum + get(r), 0) / mine.length : null;
@@ -2272,7 +2280,8 @@ function Stats({ games, cov, stats }) {
         <div className="cs-panel-head">
           <h2>Average sheet</h2>
           <p className="cs-legend">
-            What a typical game looks like for each of them, whatever cards were out.
+            What a typical game looks like for each player, guests included, whatever
+            cards were out.
             Mega C excluded; the small number is games played.
           </p>
         </div>
