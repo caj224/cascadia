@@ -117,8 +117,9 @@ persistence readily to installed apps. Two things matter beyond that:
 ## Moving your data
 
 The artifact version and this version use the same JSON format. Hit **Export log** in one
-and **Import log** in the other. Import replaces the whole log, so export first if you have
-games in both.
+and **Import log** in the other. Import asks first: **Add** keeps your games and brings in
+only the file's games you don't already have (matched by game id), while **Replace** swaps
+your whole log for the file's. Neither can be undone, so export first if unsure.
 
 ## Where things are
 

@@ -962,6 +962,23 @@ export default function CascadiaTracker() {
     URL.revokeObjectURL(url);
   };
 
+  /* A file picked for import, waiting on add-or-replace. */
+  const [pendingImport, setPendingImport] = useState(null);
+
+  /* Add: keep every current game, bring in only the file's games that are not
+     already here (same id), then put the log back in newest-first order. Ids
+     begin with the save time, so they settle games logged on the same date. */
+  const mergeImport = (incoming) => {
+    const have = new Set(games.map((g) => g.id));
+    const fresh = incoming.filter((g) => !have.has(g.id));
+    const next = [...games, ...fresh].sort(
+      (a, b) =>
+        String(b.date).localeCompare(String(a.date)) ||
+        String(b.id).localeCompare(String(a.id), undefined, { numeric: true })
+    );
+    persist(next);
+  };
+
   const importJson = (e) => {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
@@ -969,7 +986,9 @@ export default function CascadiaTracker() {
     reader.onload = () => {
       try {
         const parsed = JSON.parse(String(reader.result));
-        if (Array.isArray(parsed.games)) persist(parsed.games);
+        if (!Array.isArray(parsed.games)) throw new Error("no games");
+        /* Nothing changes yet: ask whether to add these or replace the log. */
+        setPendingImport({ name: f.name, games: parsed.games });
       } catch (err) {
         alert("That file isn't a Cascadia log export.");
       }
@@ -1072,6 +1091,52 @@ export default function CascadiaTracker() {
           style={{ display: "none" }}
         />
       </footer>
+
+      {pendingImport &&
+        (() => {
+          const have = new Set(games.map((g) => g.id));
+          const fresh = pendingImport.games.filter((g) => !have.has(g.id)).length;
+          const n = pendingImport.games.length;
+          const plural = (k) => `${k} game${k === 1 ? "" : "s"}`;
+          return (
+            <Modal title="Import this log?" onClose={() => setPendingImport(null)}>
+              <p className="cs-modal-body">
+                <strong>{pendingImport.name}</strong> has {plural(n)}; you have{" "}
+                {plural(games.length)} now.
+              </p>
+              <p className="cs-modal-body">
+                <strong>Add</strong> keeps your games and brings in the {plural(fresh)} that
+                {fresh === 1 ? " isn't" : " aren't"} already here
+                {n - fresh ? ` (${n - fresh} already in your log are skipped)` : ""}.{" "}
+                <strong>Replace</strong> throws your current log away and keeps only the
+                file's {plural(n)}. There is no undo, so export first if unsure.
+              </p>
+              <div className="cs-modal-actions">
+                <button className="cs-ghost sm" onClick={() => setPendingImport(null)}>
+                  Cancel
+                </button>
+                <button
+                  className="cs-ghost sm danger"
+                  onClick={() => {
+                    persist(pendingImport.games);
+                    setPendingImport(null);
+                  }}
+                >
+                  Replace
+                </button>
+                <button
+                  className="cs-save sm"
+                  onClick={() => {
+                    mergeImport(pendingImport.games);
+                    setPendingImport(null);
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+            </Modal>
+          );
+        })()}
     </div>
   );
 }
@@ -1092,7 +1157,7 @@ function Home({ games, cov, stats, onPlay, onGo }) {
   const streaker = REGULARS.find((r) => r.key === h2h.streak.key);
   const best = stats.streaks[0] || null;
   const bestColour = best && regularFor(best.name) ? regularFor(best.name).color : null;
-  const means = useMemo(() => cardMeans(stats.scored, null), [stats.scored]);
+  const means = useMemo(() => cardMeans(stats.scored, "all"), [stats.scored]);
 
   return (
     <div>
