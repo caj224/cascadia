@@ -1,15 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { store } from "./store.js";
-import {
-  audioBlocked,
-  drumroll,
-  fanfare,
-  hushFanfare,
-  isMuted,
-  resetAudio,
-  setMuted,
-  unlock,
-} from "./sound.js";
+import { audioBlocked, drumroll, fanfare, hushFanfare, isMuted, setMuted, unlock } from "./sound.js";
 
 /* ------------------------------------------------------------------ */
 /* Domain                                                              */
@@ -1993,7 +1984,6 @@ function WinnerReveal({ result, onClose }) {
       clearTimeout(t);
       if (stopRoll.current) stopRoll.current();
       hushFanfare(); // closing the reveal takes the win sound with it
-      resetAudio(); // and the next game gets a fresh context, like the first
     };
   }, [result]);
 

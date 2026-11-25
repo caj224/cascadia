@@ -106,23 +106,17 @@ function audio() {
 /* Fetch and decode whatever is in src/sounds/. Runs at import time so the
    files are ready — and cached by the service worker — before the first game
    is ever recorded. Failures are swallowed: the synth is always there. */
-const bytes = {}; // role -> fetched file, kept so a fresh context can re-decode
-
 function preload() {
   if (loading || !HAS_FILES) return loading;
   const ac = ensureCtx();
   if (!ac) return null;
   loading = Promise.all(
     Object.keys(SAMPLE_URL).map((role) =>
-      (bytes[role]
-        ? Promise.resolve(bytes[role])
-        : fetch(SAMPLE_URL[role])
-            .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))))
-            .then((b) => (bytes[role] = b)))
-        // decodeAudioData detaches what it is given, so it always gets a copy.
-        .then((b) => ac.decodeAudioData(b.slice(0)))
+      fetch(SAMPLE_URL[role])
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))))
+        .then((b) => ac.decodeAudioData(b))
         .then((buf) => {
-          if (ctx === ac) samples[role] = buf;
+          samples[role] = buf;
         })
         .catch(() => {}) // stay on the synthesised fallback for this role
     )
@@ -130,29 +124,6 @@ function preload() {
   return loading;
 }
 preload();
-
-/*
- * Start over with a brand-new context, set up exactly as it is on page load.
- *
- * The first game after a load always had sound and every one after it was
- * silent: once a clip has played, iOS — a home-screen app especially — leaves
- * the context dead in a way resume() does not fix. So when the reveal closes,
- * the used context is thrown away and a new one is made and the samples are
- * decoded into it, ready for the next save's tap to unlock it like the first.
- * The samples are decoded by the context that plays them, as they always were.
- */
-export function resetAudio() {
-  const old = ctx;
-  ctx = null;
-  kicked = false;
-  loading = null;
-  for (const role in samples) delete samples[role];
-  if (old) {
-    // Let hushFanfare's fade finish before the context goes.
-    setTimeout(() => old.close().catch(() => {}), 400);
-  }
-  preload();
-}
 
 function playSample(ac, role, at, limit) {
   const buf = samples[role];
