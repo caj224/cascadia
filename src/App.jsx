@@ -2307,22 +2307,47 @@ const TREND_SERIES = [
   { key: "landscape", label: "Maps", color: "#1baf7a" },
 ];
 
-/* One regular's scored games in the order played, each with the trailing
-   mean of the last TREND_WINDOW games (fewer until there are that many). */
-function trendSeries(rows, key) {
-  const mine = rows.filter((r) => r.key === key).reverse(); // rows are newest first
-  return mine.map((r, i) => {
-    const win = mine.slice(Math.max(0, i - TREND_WINDOW + 1), i + 1);
-    const avg = (k) => win.reduce((s, x) => s + x[k], 0) / win.length;
+/* Whose seats a trend reads: "all" is everyone logged, guests included;
+   "both" is the two regulars together; anything else is one regular's key. */
+const seatFilter = (who) => (r) =>
+  who === "all" ? true : who === "both" ? !!regularFor(r.name) : r.key === who;
+
+/* The games a set of seats sat in, in the order played, each with the trailing
+   mean over the last TREND_WINDOW of those games (fewer until there are that
+   many). With more than one person in view every seat in the window counts,
+   so a game three people played weighs three times. "That game" is the mean
+   of the seats in it. */
+function trendSeries(rows, who) {
+  const keep = seatFilter(who);
+  const games = [];
+  const byId = new Map();
+  [...rows].reverse().forEach((r) => {
+    // rows are newest first
+    if (!keep(r)) return;
+    if (!byId.has(r.gameId)) {
+      const g = { date: r.date, seats: [] };
+      byId.set(r.gameId, g);
+      games.push(g);
+    }
+    byId.get(r.gameId).seats.push(r);
+  });
+  const mean = (seats, k) => seats.reduce((s, x) => s + x[k], 0) / seats.length;
+  return games.map((g, i) => {
+    const win = games.slice(Math.max(0, i - TREND_WINDOW + 1), i + 1).flatMap((x) => x.seats);
+    const fmt = (v) => (g.seats.length > 1 ? Number(v.toFixed(1)) : v);
     return {
       n: i + 1,
-      date: r.date,
-      span: win.length,
-      raw: Object.fromEntries(TREND_SERIES.map((s) => [s.key, r[s.key]])),
-      ma: Object.fromEntries(TREND_SERIES.map((s) => [s.key, avg(s.key)])),
+      date: g.date,
+      span: Math.min(i + 1, TREND_WINDOW),
+      raw: Object.fromEntries(TREND_SERIES.map((s) => [s.key, fmt(mean(g.seats, s.key))])),
+      ma: Object.fromEntries(TREND_SERIES.map((s) => [s.key, mean(win, s.key)])),
     };
   });
 }
+
+/* A guest gets their own trend button once they have this many scored games;
+   fewer than one full window is not a trend yet. */
+const TREND_MIN_GAMES = TREND_WINDOW;
 
 /* Width of an element, kept current, so charts draw at real pixels and their
    text never scales with the viewport. */
@@ -2610,16 +2635,37 @@ function DistChart({ bins, color, mean, peak }) {
 
 function Trends({ stats }) {
   const rows = stats.scored;
-  const [who, setWho] = useState(REGULARS[0].key);
-  const reg = REGULARS.find((r) => r.key === who);
-  const points = useMemo(() => trendSeries(rows, who), [rows, who]);
+  const [who, setWho] = useState("all");
+  const choices = useMemo(
+    () => [
+      ["all", "All"],
+      ["both", "Both"],
+      ...REGULARS.map((r) => [r.key, r.label]),
+      ...stats.people
+        .filter((p) => !regularFor(p.name) && p.scored >= TREND_MIN_GAMES)
+        .sort((a, b) => b.scored - a.scored)
+        .map((p) => [p.key, displayName(p.name)]),
+    ],
+    [stats.people]
+  );
+  const picked = choices.find(([k]) => k === who) || choices[0];
+  const whoText =
+    picked[0] === "all"
+      ? "Everyone's"
+      : picked[0] === "both"
+      ? `${REGULARS.map((r) => r.label).join(" and ")}'s`
+      : `${picked[1]}'s`;
+  const points = useMemo(() => trendSeries(rows, picked[0]), [rows, picked[0]]);
 
   /* Distribution: one shared 5-point range across both regulars. */
   const dist = useMemo(() => {
-    const per = REGULARS.map((r) => ({
-      ...r,
-      totals: rows.filter((x) => x.key === r.key).map((x) => x.total),
-    }));
+    const per = [
+      { key: "all", label: "All players", color: "#5A6660", totals: rows.map((x) => x.total) },
+      ...REGULARS.map((r) => ({
+        ...r,
+        totals: rows.filter((x) => x.key === r.key).map((x) => x.total),
+      })),
+    ];
     const all = per.flatMap((p) => p.totals);
     if (!all.length) return null;
     const lo = Math.floor(Math.min(...all) / 5) * 5;
@@ -2632,7 +2678,9 @@ function Trends({ stats }) {
       lo: p.totals.length ? Math.min(...p.totals) : null,
       hi: p.totals.length ? Math.max(...p.totals) : null,
     }));
-    const peak = Math.max(...out.flatMap((p) => p.bins.map((b) => b.n)));
+    /* Everyone's panel has far more games, so it gets its own height; the two
+       regulars share one so their shapes compare directly. */
+    const peak = Math.max(...out.slice(1).flatMap((p) => p.bins.map((b) => b.n)));
     return { per: out, peak };
   }, [rows]);
 
@@ -2642,21 +2690,23 @@ function Trends({ stats }) {
         <div className="cs-panel-head">
           <h2>Moving average</h2>
           <div className="cs-actions">
-            <div className="cs-seg">
-              {REGULARS.map((r) => (
+            <div className="cs-seg cs-seg-scroll">
+              {choices.map(([k, label]) => (
                 <button
-                  key={r.key}
-                  className={"cs-segbtn" + (who === r.key ? " on" : "")}
-                  onClick={() => setWho(r.key)}
+                  key={k}
+                  className={"cs-segbtn" + (picked[0] === k ? " on" : "")}
+                  onClick={() => setWho(k)}
                 >
-                  {r.label}
+                  {label}
                 </button>
               ))}
             </div>
           </div>
         </div>
         <p className="cs-legend cs-legend-wide">
-          {reg.label}'s average over the last {TREND_WINDOW} games, game by game. Total is
+          {whoText} average over the last {TREND_WINDOW} games, game by game
+          {picked[0] === "all" ? ", guests included" : ""}. With more than one of you in view,
+          every score in those games counts. Total is
           the whole sheet; wildlife and maps are its two biggest parts, so the gap between
           them and the total is majorities and pinecones. The first {TREND_WINDOW - 1}{" "}
           points average fewer games. Mega C excluded. Tap or hover the chart for any game.
@@ -2684,7 +2734,7 @@ function Trends({ stats }) {
                       {TREND_SERIES.map((s) => (
                         <th key={s.key}>{s.label} avg</th>
                       ))}
-                      <th>Total that game</th>
+                      <th>{picked[0] === "all" || picked[0] === "both" ? "Avg total that game" : "Total that game"}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2704,7 +2754,7 @@ function Trends({ stats }) {
             </details>
           </>
         ) : (
-          <p className="cs-legend">No scored games for {reg.label} yet.</p>
+          <p className="cs-legend">No scored games here yet.</p>
         )}
       </div>
 
@@ -2713,8 +2763,9 @@ function Trends({ stats }) {
           <h2>Score distribution</h2>
         </div>
         <p className="cs-legend cs-legend-wide">
-          How often each total comes up, in 5-point bands, on the same scale for both of
-          you. The dashed line is the average. Mega C excluded.
+          How often each total comes up, in 5-point bands. All players is every seat,
+          guests included; the two of you share one scale so your shapes compare
+          directly. The dashed line is the average. Mega C excluded.
         </p>
         {dist ? (
           dist.per.map((p) => (
@@ -2723,12 +2774,17 @@ function Trends({ stats }) {
                 <strong style={{ color: p.color }}>{p.label}</strong>
                 <span className="mono">
                   {p.totals.length
-                    ? `${p.totals.length} games · median ${p.median} · low ${p.lo} · high ${p.hi}`
+                    ? `${p.totals.length} ${p.key === "all" ? "scores" : "games"} · median ${p.median} · low ${p.lo} · high ${p.hi}`
                     : "no scored games"}
                 </span>
               </div>
               {p.totals.length > 0 && (
-                <DistChart bins={p.bins} color={p.color} mean={p.mean} peak={dist.peak} />
+                <DistChart
+                  bins={p.bins}
+                  color={p.color}
+                  mean={p.mean}
+                  peak={p.key === "all" ? Math.max(...p.bins.map((b) => b.n)) : dist.peak}
+                />
               )}
             </div>
           ))
@@ -3327,6 +3383,8 @@ const CSS = `
 .cs-seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .cs-segbtn { font-family: 'IBM Plex Mono', monospace; font-size: 12px; border: none; background: #fff; padding: 5px 9px; cursor: pointer; color: var(--ink-2); }
 .cs-segbtn.on { background: var(--ink); color: #fff; }
+.cs-seg-scroll { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.cs-seg-scroll .cs-segbtn { flex: none; }
 
 .cs-mega, .cs-hide { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; user-select: none; }
 .cs-mega input, .cs-hide input { width: 15px; height: 15px; accent-color: #35604A; cursor: pointer; margin: 0; }
