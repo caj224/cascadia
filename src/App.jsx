@@ -907,6 +907,7 @@ const TABS = [
   ["home", "Home"],
   ["add", "Add game"],
   ["stats", "Stats"],
+  ["trends", "Trends"],
   ["log", "Log"],
 ];
 
@@ -1064,6 +1065,8 @@ export default function CascadiaTracker() {
         />
       ) : tab === "stats" ? (
         <Stats games={games} cov={cov} stats={stats} />
+      ) : tab === "trends" ? (
+        <Trends stats={stats} />
       ) : (
         <GamesList
           games={games}
@@ -2259,6 +2262,495 @@ function GamesList({ games, cov, onDelete }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Trends                                                              */
+/* ------------------------------------------------------------------ */
+
+/* Total score on each scoring card, for the regulars only. who is "both" or
+   one regular's key. Reads scored rows, so Mega C is already out. */
+function cardTotals(rows, who) {
+  const acc = Object.fromEntries(
+    ANIMALS.map((a) => [
+      a.key,
+      Object.fromEntries(CARDS.map((c) => [c, { n: 0, sum: 0, lo: null, hi: null }])),
+    ])
+  );
+  let n = 0;
+  let sum = 0;
+  rows.forEach((r) => {
+    if (who === "both" ? !regularFor(r.name) : r.key !== who) return;
+    n++;
+    sum += r.total;
+    ANIMALS.forEach((a) => {
+      const cell = acc[a.key][r.cards[a.key]];
+      if (!cell) return;
+      cell.n++;
+      cell.sum += r.total;
+      if (cell.lo === null || r.total < cell.lo) cell.lo = r.total;
+      if (cell.hi === null || r.total > cell.hi) cell.hi = r.total;
+    });
+  });
+  /* Best and worst card per animal by mean total. A card seen once can top
+     the row, same as the wildlife table; the game count sits beside it. */
+  const ends = {};
+  ANIMALS.forEach((a) => {
+    let best = null;
+    let worst = null;
+    CARDS.forEach((c) => {
+      const cell = acc[a.key][c];
+      if (!cell.n) return;
+      const mean = cell.sum / cell.n;
+      if (!best || mean > best.mean) best = { card: c, mean };
+      if (!worst || mean < worst.mean) worst = { card: c, mean };
+    });
+    ends[a.key] = best && worst && best.card !== worst.card ? { best, worst } : null;
+  });
+  return { acc, ends, n, mean: n ? sum / n : null };
+}
+
+const TREND_WINDOW = 10;
+
+/* Chart colors. Validated as a set on white (all-pairs CVD ΔE ≥ 9); aqua sits
+   under 3:1, so every line also carries a direct label at its end. */
+const TREND_SERIES = [
+  { key: "total", label: "Total", color: "#2a78d6" },
+  { key: "wildlife", label: "Wildlife", color: "#eb6834" },
+  { key: "landscape", label: "Maps", color: "#1baf7a" },
+];
+
+/* One regular's scored games in the order played, each with the trailing
+   mean of the last TREND_WINDOW games (fewer until there are that many). */
+function trendSeries(rows, key) {
+  const mine = rows.filter((r) => r.key === key).reverse(); // rows are newest first
+  return mine.map((r, i) => {
+    const win = mine.slice(Math.max(0, i - TREND_WINDOW + 1), i + 1);
+    const avg = (k) => win.reduce((s, x) => s + x[k], 0) / win.length;
+    return {
+      n: i + 1,
+      date: r.date,
+      span: win.length,
+      raw: Object.fromEntries(TREND_SERIES.map((s) => [s.key, r[s.key]])),
+      ma: Object.fromEntries(TREND_SERIES.map((s) => [s.key, avg(s.key)])),
+    };
+  });
+}
+
+/* Width of an element, kept current, so charts draw at real pixels and their
+   text never scales with the viewport. */
+function useWidth() {
+  const ref = useRef(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([e]) => setW(Math.floor(e.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, w];
+}
+
+/* Round numbers for an axis: 0 up to just past max, in steps of 10 or 20. */
+function niceTicks(max) {
+  const step = max > 120 ? 20 : 10;
+  const top = Math.max(step, Math.ceil(max / step) * step);
+  const ticks = [];
+  for (let v = 0; v <= top; v += step) ticks.push(v);
+  return { top, ticks };
+}
+
+function TrendChart({ points }) {
+  const [ref, width] = useWidth();
+  const [hover, setHover] = useState(null);
+  const H = 260;
+  const M = { l: 34, r: 92, t: 12, b: 28 };
+  const iw = Math.max(0, width - M.l - M.r);
+  const ih = H - M.t - M.b;
+  const max = Math.max(...points.flatMap((p) => TREND_SERIES.map((s) => p.ma[s.key])));
+  const { top, ticks } = niceTicks(max);
+  const x = (i) => M.l + (points.length > 1 ? (i / (points.length - 1)) * iw : iw / 2);
+  const y = (v) => M.t + ih - (v / top) * ih;
+
+  /* Game-number ticks: about one every 55px, on round numbers. */
+  const want = points.length / Math.max(2, Math.floor(iw / 55));
+  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500].find((x) => x >= want) || 1000;
+  const xticks = points.filter((p) => p.n === 1 || p.n % step === 0);
+
+  /* End labels, nudged apart so close lines never print on top of each other. */
+  const last = points[points.length - 1];
+  const ends = TREND_SERIES.map((s) => ({ ...s, v: last.ma[s.key], y: y(last.ma[s.key]) })).sort(
+    (a, b) => a.y - b.y
+  );
+  for (let i = 1; i < ends.length; i++)
+    if (ends[i].y - ends[i - 1].y < 14) ends[i].y = ends[i - 1].y + 14;
+
+  const onMove = (e) => {
+    const box = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - box.left;
+    const i =
+      points.length > 1 ? Math.round(((px - M.l) / iw) * (points.length - 1)) : 0;
+    setHover(Math.min(points.length - 1, Math.max(0, i)));
+  };
+  const hp = hover !== null ? points[hover] : null;
+
+  return (
+    <div className="cs-chart" ref={ref}>
+      {width > 0 && (
+        <svg
+          width={width}
+          height={H}
+          onPointerMove={onMove}
+          onPointerDown={onMove}
+          onPointerLeave={() => setHover(null)}
+          role="img"
+          aria-label="Ten-game moving average of total, wildlife and maps score"
+        >
+          {ticks.map((t) => (
+            <g key={t}>
+              <line x1={M.l} x2={M.l + iw} y1={y(t)} y2={y(t)} className="cs-grid-line" />
+              <text x={M.l - 6} y={y(t) + 3} className="cs-axis" textAnchor="end">
+                {t}
+              </text>
+            </g>
+          ))}
+          {xticks.map((p) => (
+            <text key={p.n} x={x(p.n - 1)} y={H - 8} className="cs-axis" textAnchor="middle">
+              {p.n}
+            </text>
+          ))}
+          {TREND_SERIES.map((s) => (
+            <polyline
+              key={s.key}
+              fill="none"
+              stroke={s.color}
+              strokeWidth="2"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={points.map((p, i) => `${x(i)},${y(p.ma[s.key])}`).join(" ")}
+            />
+          ))}
+          {points.length === 1 &&
+            TREND_SERIES.map((s) => (
+              <circle key={s.key} cx={x(0)} cy={y(last.ma[s.key])} r="4" fill={s.color} />
+            ))}
+          {ends.map((s) => (
+            <g key={s.key}>
+              <line
+                x1={M.l + iw + 6}
+                x2={M.l + iw + 14}
+                y1={s.y}
+                y2={s.y}
+                stroke={s.color}
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+              <text x={M.l + iw + 18} y={s.y + 4} className="cs-endlabel">
+                {s.label} <tspan className="cs-endval">{s.v.toFixed(1)}</tspan>
+              </text>
+            </g>
+          ))}
+          {hp && (
+            <g pointerEvents="none">
+              <line
+                x1={x(hover)}
+                x2={x(hover)}
+                y1={M.t}
+                y2={M.t + ih}
+                className="cs-crosshair"
+              />
+              {TREND_SERIES.map((s) => (
+                <circle
+                  key={s.key}
+                  cx={x(hover)}
+                  cy={y(hp.ma[s.key])}
+                  r="4.5"
+                  fill={s.color}
+                  stroke="#fff"
+                  strokeWidth="2"
+                />
+              ))}
+            </g>
+          )}
+        </svg>
+      )}
+      {hp && (
+        <div
+          className="cs-tip"
+          style={{
+            left: Math.min(Math.max(x(hover) - 80, 0), Math.max(0, width - 170)),
+          }}
+        >
+          <div className="cs-tip-head">
+            Game {hp.n} · {hp.date}
+          </div>
+          {TREND_SERIES.map((s) => (
+            <div key={s.key} className="cs-tip-row">
+              <span className="cs-swatch" style={{ background: s.color }} />
+              <span className="cs-tip-label">{s.label}</span>
+              <span className="mono cs-tip-val">{hp.ma[s.key].toFixed(1)}</span>
+              <span className="mono cs-tip-raw">{hp.raw[s.key]}</span>
+            </div>
+          ))}
+          <div className="cs-tip-foot">
+            avg of last {hp.span} · that game
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Totals in 5-point buckets, for one player, over a range shared by both
+   panels so the two histograms line up. */
+function histogram(totals, lo, hi) {
+  const bins = [];
+  for (let b = lo; b < hi; b += 5) bins.push({ from: b, to: b + 4, n: 0 });
+  totals.forEach((t) => {
+    const i = Math.min(bins.length - 1, Math.floor((t - lo) / 5));
+    if (bins[i]) bins[i].n++;
+  });
+  return bins;
+}
+
+const median = (xs) => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+function DistChart({ bins, color, mean, peak }) {
+  const [ref, width] = useWidth();
+  const [hover, setHover] = useState(null);
+  const H = 150;
+  const M = { l: 28, r: 8, t: 18, b: 24 };
+  const iw = Math.max(0, width - M.l - M.r);
+  const ih = H - M.t - M.b;
+  const bw = bins.length ? iw / bins.length : 0;
+  const yTop = Math.max(1, peak);
+  const y = (v) => M.t + ih - (v / yTop) * ih;
+  const lo = bins.length ? bins[0].from : 0;
+  const xv = (v) => M.l + ((v - lo) / 5) * bw;
+  const total = bins.reduce((s, b) => s + b.n, 0);
+  const labelEvery = bw >= 34 ? 1 : bw >= 17 ? 2 : 4;
+  const r = Math.min(4, Math.max(0, bw / 2 - 1));
+
+  return (
+    <div className="cs-chart" ref={ref}>
+      {width > 0 && (
+        <svg width={width} height={H} onPointerLeave={() => setHover(null)} role="img"
+          aria-label="Distribution of total scores">
+          <line x1={M.l} x2={M.l + iw} y1={y(0)} y2={y(0)} className="cs-axis-line" />
+          {[yTop].map((t) => (
+            <g key={t}>
+              <line x1={M.l} x2={M.l + iw} y1={y(t)} y2={y(t)} className="cs-grid-line" />
+              <text x={M.l - 6} y={y(t) + 3} className="cs-axis" textAnchor="end">
+                {t}
+              </text>
+            </g>
+          ))}
+          {bins.map((b, i) => {
+            const x0 = M.l + i * bw + 1;
+            const w = Math.max(1, bw - 2);
+            const h = y(0) - y(b.n);
+            const rr = Math.min(r, h);
+            return (
+              <g key={b.from}>
+                {b.n > 0 && (
+                  <path
+                    d={`M${x0},${y(0)} V${y(b.n) + rr} Q${x0},${y(b.n)} ${x0 + rr},${y(b.n)} H${
+                      x0 + w - rr
+                    } Q${x0 + w},${y(b.n)} ${x0 + w},${y(b.n) + rr} V${y(0)} Z`}
+                    fill={color}
+                    opacity={hover === null || hover === i ? 1 : 0.45}
+                  />
+                )}
+                {i % labelEvery === 0 && (
+                  <text x={x0 - 1} y={H - 8} className="cs-axis" textAnchor="middle">
+                    {b.from}
+                  </text>
+                )}
+                <rect
+                  x={M.l + i * bw}
+                  y={M.t}
+                  width={bw}
+                  height={ih}
+                  fill="transparent"
+                  onPointerEnter={() => setHover(i)}
+                  onPointerDown={() => setHover(i)}
+                />
+              </g>
+            );
+          })}
+          {mean !== null && (
+            <g pointerEvents="none">
+              <line
+                x1={xv(mean)}
+                x2={xv(mean)}
+                y1={M.t - 4}
+                y2={y(0)}
+                className="cs-meanline"
+              />
+              <text x={xv(mean)} y={M.t - 7} className="cs-axis cs-meanlabel" textAnchor="middle">
+                avg {mean.toFixed(1)}
+              </text>
+            </g>
+          )}
+        </svg>
+      )}
+      {hover !== null && bins[hover] && (
+        <div
+          className="cs-tip"
+          style={{ left: Math.min(Math.max(M.l + hover * bw - 50, 0), Math.max(0, width - 150)) }}
+        >
+          <div className="cs-tip-head">
+            {bins[hover].from}–{bins[hover].to} points
+          </div>
+          <div className="cs-tip-row">
+            <span className="cs-swatch" style={{ background: color }} />
+            <span className="mono">
+              {bins[hover].n} game{bins[hover].n === 1 ? "" : "s"} ·{" "}
+              {total ? Math.round((bins[hover].n / total) * 100) : 0}%
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Trends({ stats }) {
+  const rows = stats.scored;
+  const [who, setWho] = useState(REGULARS[0].key);
+  const reg = REGULARS.find((r) => r.key === who);
+  const points = useMemo(() => trendSeries(rows, who), [rows, who]);
+
+  /* Distribution: one shared 5-point range across both regulars. */
+  const dist = useMemo(() => {
+    const per = REGULARS.map((r) => ({
+      ...r,
+      totals: rows.filter((x) => x.key === r.key).map((x) => x.total),
+    }));
+    const all = per.flatMap((p) => p.totals);
+    if (!all.length) return null;
+    const lo = Math.floor(Math.min(...all) / 5) * 5;
+    const hi = Math.floor(Math.max(...all) / 5) * 5 + 5;
+    const out = per.map((p) => ({
+      ...p,
+      bins: histogram(p.totals, lo, hi),
+      mean: p.totals.length ? p.totals.reduce((s, t) => s + t, 0) / p.totals.length : null,
+      median: median(p.totals),
+      lo: p.totals.length ? Math.min(...p.totals) : null,
+      hi: p.totals.length ? Math.max(...p.totals) : null,
+    }));
+    const peak = Math.max(...out.flatMap((p) => p.bins.map((b) => b.n)));
+    return { per: out, peak };
+  }, [rows]);
+
+  return (
+    <div>
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Moving average</h2>
+          <div className="cs-actions">
+            <div className="cs-seg">
+              {REGULARS.map((r) => (
+                <button
+                  key={r.key}
+                  className={"cs-segbtn" + (who === r.key ? " on" : "")}
+                  onClick={() => setWho(r.key)}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <p className="cs-legend cs-legend-wide">
+          {reg.label}'s average over the last {TREND_WINDOW} games, game by game. Total is
+          the whole sheet; wildlife and maps are its two biggest parts, so the gap between
+          them and the total is majorities and pinecones. The first {TREND_WINDOW - 1}{" "}
+          points average fewer games. Mega C excluded. Tap or hover the chart for any game.
+        </p>
+        {points.length ? (
+          <>
+            <div className="cs-chart-legend">
+              {TREND_SERIES.map((s) => (
+                <span key={s.key}>
+                  <span className="cs-swatch line" style={{ background: s.color }} />
+                  {s.label}
+                </span>
+              ))}
+            </div>
+            <TrendChart points={points} />
+            <p className="cs-axis-note">Game number, oldest first</p>
+            <details className="cs-chart-table">
+              <summary>Show as a table</summary>
+              <div className="cs-table-wrap">
+                <table className="cs-table mono">
+                  <thead>
+                    <tr>
+                      <th>Game</th>
+                      <th>Date</th>
+                      {TREND_SERIES.map((s) => (
+                        <th key={s.key}>{s.label} avg</th>
+                      ))}
+                      <th>Total that game</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...points].reverse().map((p) => (
+                      <tr key={p.n}>
+                        <td>{p.n}</td>
+                        <td>{p.date}</td>
+                        {TREND_SERIES.map((s) => (
+                          <td key={s.key}>{p.ma[s.key].toFixed(1)}</td>
+                        ))}
+                        <td>{p.raw.total}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </>
+        ) : (
+          <p className="cs-legend">No scored games for {reg.label} yet.</p>
+        )}
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Score distribution</h2>
+        </div>
+        <p className="cs-legend cs-legend-wide">
+          How often each total comes up, in 5-point bands, on the same scale for both of
+          you. The dashed line is the average. Mega C excluded.
+        </p>
+        {dist ? (
+          dist.per.map((p) => (
+            <div key={p.key} className="cs-dist">
+              <div className="cs-dist-head">
+                <strong style={{ color: p.color }}>{p.label}</strong>
+                <span className="mono">
+                  {p.totals.length
+                    ? `${p.totals.length} games · median ${p.median} · low ${p.lo} · high ${p.hi}`
+                    : "no scored games"}
+                </span>
+              </div>
+              {p.totals.length > 0 && (
+                <DistChart bins={p.bins} color={p.color} mean={p.mean} peak={dist.peak} />
+              )}
+            </div>
+          ))
+        ) : (
+          <p className="cs-legend">No scored games yet.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Stats                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -2271,6 +2763,8 @@ function Stats({ games, cov, stats }) {
     [rows, who]
   );
   const avg = useMemo(() => playerMeans(rows), [rows]);
+  const [totWho, setTotWho] = useState("both"); // "both" | a regular's key
+  const tot = useMemo(() => cardTotals(rows, totWho), [rows, totWho]);
   const highs = useMemo(() => cardHighs(rows), [rows]);
   const pct = (cov.played.size / TOTAL_COMBOS) * 100;
 
@@ -2524,6 +3018,80 @@ function Stats({ games, cov, stats }) {
                     <td className="cs-td-total" style={{ color: a.color }}>
                       {best ? best.card : "–"}
                     </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="cs-panel">
+        <div className="cs-panel-head">
+          <h2>Total score per card</h2>
+          <div className="cs-actions">
+            <div className="cs-seg">
+              {[["both", "Both"], ...REGULARS.map((r) => [r.key, r.label])].map(([k, label]) => (
+                <button
+                  key={k}
+                  className={"cs-segbtn" + (totWho === k ? " on" : "")}
+                  onClick={() => setTotWho(k)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <p className="cs-legend cs-legend-wide">
+          How each card moves the whole score: average total in games where it was out,
+          with the lowest and highest total under it.{" "}
+          {REGULARS.map((r) => r.label).join(" and ")} only, Mega C excluded
+          {tot.mean !== null ? `; across every game the average is ${tot.mean.toFixed(1)}` : ""}.
+          Green is the best card for that animal, red the worst; the small number is games.
+        </p>
+        <div className="cs-meantable-wrap">
+          <table className="cs-table mono cs-meantable cs-cardhigh">
+            <thead>
+              <tr>
+                <th />
+                {CARDS.map((c) => (
+                  <th key={c}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {ANIMALS.map((a) => {
+                const ends = tot.ends[a.key];
+                return (
+                  <tr key={a.key}>
+                    <td className="cs-td-name" style={{ color: a.color }}>
+                      {a.label}
+                    </td>
+                    {CARDS.map((c) => {
+                      const cell = tot.acc[a.key][c];
+                      if (!cell.n)
+                        return (
+                          <td key={c} className="cs-td-none">
+                            –
+                          </td>
+                        );
+                      const mark =
+                        ends && ends.best.card === c
+                          ? "cs-td-best"
+                          : ends && ends.worst.card === c
+                          ? "cs-td-worst"
+                          : "";
+                      return (
+                        <td key={c} className={mark}>
+                          {(cell.sum / cell.n).toFixed(1)}
+                          <em className="cs-n">{cell.n}</em>
+                          <span className="cs-cardhigh-who">
+                            {cell.lo}–{cell.hi}
+                          </span>
+                        </td>
+                      );
+                    })}
                   </tr>
                 );
               })}
@@ -2920,6 +3488,37 @@ const CSS = `
 .cs-td-total { font-weight: 600; font-size: 14px; }
 .cs-td-none { color: #C3CBC2; }
 .cs-td-best { background: #E7F0E7; color: #24503A; font-weight: 600; border-radius: 4px; }
+.cs-td-worst { background: #F6E6E3; color: #8E3329; font-weight: 600; border-radius: 4px; }
+
+/* Charts */
+.cs-chart { position: relative; width: 100%; touch-action: pan-y; }
+.cs-chart svg { display: block; overflow: visible; }
+.cs-grid-line { stroke: #E6EAE3; stroke-width: 1; }
+.cs-axis-line { stroke: #B9C2B7; stroke-width: 1; }
+.cs-axis { font-family: 'IBM Plex Mono', monospace; font-size: 10px; fill: var(--ink-2); }
+.cs-axis-note { font-size: 11px; color: var(--ink-2); margin: 2px 0 0; text-align: center; }
+.cs-endlabel { font-family: 'Inter Tight', system-ui, sans-serif; font-size: 11px; font-weight: 600; fill: var(--ink); }
+.cs-endval { font-family: 'IBM Plex Mono', monospace; font-weight: 500; fill: var(--ink-2); }
+.cs-crosshair { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 3 3; }
+.cs-meanline { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.cs-meanlabel { fill: var(--ink); font-weight: 600; }
+.cs-chart-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink); margin: 0 0 6px; }
+.cs-chart-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.cs-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.cs-swatch.line { width: 14px; height: 3px; border-radius: 2px; }
+.cs-tip { position: absolute; top: 0; z-index: 5; min-width: 150px; pointer-events: none; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); font-size: 12px; }
+.cs-tip-head { font-weight: 600; margin-bottom: 4px; white-space: nowrap; }
+.cs-tip-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cs-tip-label { flex: 1; }
+.cs-tip-val { font-weight: 600; }
+.cs-tip-raw { color: var(--ink-2); min-width: 26px; text-align: right; }
+.cs-tip-foot { margin-top: 4px; font-size: 10px; color: var(--ink-2); text-align: right; }
+.cs-chart-table { margin-top: 10px; font-size: 12px; }
+.cs-chart-table summary { cursor: pointer; color: var(--ink-2); }
+.cs-chart-table .cs-table-wrap { max-height: 320px; overflow: auto; margin-top: 8px; }
+.cs-dist + .cs-dist { margin-top: 14px; }
+.cs-dist-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 12px; color: var(--ink-2); margin-bottom: 2px; }
+.cs-dist-head strong { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-size: 13px; }
 .cs-n { font-style: normal; font-size: 8px; color: var(--ink-2); margin-left: 3px; vertical-align: super; }
 .cs-people { max-width: 640px; }
 .cs-cardhigh td { vertical-align: top; }
@@ -2957,6 +3556,8 @@ const CSS = `
   .cs-h2h-side { flex-basis: 100px; }
   .cs-h2h-more { grid-template-columns: 1fr; gap: 14px; }
   .cs-suggest-letter { width: 40px; height: 50px; font-size: 19px; }
+  .cs-tabs { overflow-x: auto; scrollbar-width: none; }
+  .cs-tab { padding: 8px 8px; flex: none; }
 }
 @media (prefers-reduced-motion: reduce) { .cs-root * { transition: none !important; animation: none !important; } }
 `;

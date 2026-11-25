@@ -3,7 +3,7 @@
 Combo tracker and scorecard for Cascadia. Tracks which of the 16,807 (7^5) wildlife
 scoring-card combinations you have played, plus a full per-game scorepad.
 
-Four pages:
+Five pages:
 
 - **Home** — combos played out of 16,807, the Caleb vs Allison record, longest win
   streaks (overall and head-to-head), single-game records with who set them, the best
@@ -13,7 +13,9 @@ Four pages:
   Habitat majorities are computed for you. Defaults to Allison and Caleb. Saving a
   multiplayer game plays a drumroll and announces the winner.
 - **Stats** — every player's record, all single-game highs, the average score for each
-  card (all players, Caleb and Allison together, or one), Caleb vs Allison win % per card, the pairing lattice, and card usage.
+  card (all players, Caleb and Allison together, or one), Caleb vs Allison win % per card, average/lowest/highest total per card, the pairing lattice, and card usage.
+- **Trends** — Caleb's or Allison's 10-game moving average of total, wildlife and maps
+  score, and the spread of each one's totals in 5-point bands. Tap a chart for detail.
 - **Log** — every game recorded, newest first. Tap one to see the full sheet.
 
 The two regulars are set by `REGULARS` in `src/App.jsx`. Names are matched
