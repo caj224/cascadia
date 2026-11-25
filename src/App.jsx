@@ -2633,6 +2633,191 @@ function DistChart({ bins, color, mean, peak }) {
   );
 }
 
+/* Line colors for guests in the everyone view. The regulars keep their own
+   colors everywhere; green and red are close for red-green colorblind eyes,
+   so every line is also named at its end and in the readout. */
+const GUEST_COLORS = ["#2a78d6", "#eda100", "#e87ba4", "#6250d6"];
+
+/* One line per person: each one's moving average of `metric` over their own
+   last TREND_WINDOW games, laid on a shared axis of every scored game in the
+   order played, so lines sit where those games happened. */
+function playerLines(rows, people, metric) {
+  const order = new Map();
+  const dates = [];
+  [...rows].reverse().forEach((r) => {
+    if (!order.has(r.gameId)) {
+      order.set(r.gameId, order.size);
+      dates.push(r.date);
+    }
+  });
+  const lines = people.map((p) => {
+    const mine = rows.filter((r) => r.key === p.key).reverse();
+    const pts = mine.map((r, i) => {
+      const win = mine.slice(Math.max(0, i - TREND_WINDOW + 1), i + 1);
+      return {
+        x: order.get(r.gameId),
+        v: win.reduce((s, x) => s + x[metric], 0) / win.length,
+        raw: r[metric],
+      };
+    });
+    return { ...p, pts };
+  });
+  return { lines, count: order.size, dates };
+}
+
+function PlayersChart({ lines, count, dates }) {
+  const [ref, width] = useWidth();
+  const [hover, setHover] = useState(null);
+  const H = 260;
+  const M = { l: 34, r: 104, t: 12, b: 28 };
+  const iw = Math.max(0, width - M.l - M.r);
+  const ih = H - M.t - M.b;
+  const drawn = lines.filter((l) => l.pts.length);
+  /* Zoomed to where the lines are rather than from zero: the point here is
+     telling players apart, and they mostly sit within a few points. */
+  const vals = drawn.flatMap((l) => l.pts.map((p) => p.v));
+  const vmin = vals.length ? Math.min(...vals) : 0;
+  const vmax = vals.length ? Math.max(...vals) : 10;
+  const tstep = vmax - vmin > 40 ? 10 : 5;
+  const bottom = Math.max(0, Math.floor((vmin - 1) / tstep) * tstep);
+  const top = Math.max(bottom + tstep, Math.ceil((vmax + 1) / tstep) * tstep);
+  const ticks = [];
+  for (let v = bottom; v <= top; v += tstep) ticks.push(v);
+  const x = (i) => M.l + (count > 1 ? (i / (count - 1)) * iw : iw / 2);
+  const y = (v) => M.t + ih - ((v - bottom) / (top - bottom)) * ih;
+
+  const want = count / Math.max(2, Math.floor(iw / 55));
+  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500].find((s) => s >= want) || 1000;
+  const xticks = [];
+  for (let n = 1; n <= count; n++) if (n === 1 || n % step === 0) xticks.push(n);
+
+  const ends = drawn
+    .map((l) => {
+      const last = l.pts[l.pts.length - 1];
+      return { key: l.key, label: l.label, color: l.color, v: last.v, ex: x(last.x), y: y(last.v) };
+    })
+    .sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++)
+    if (ends[i].y - ends[i - 1].y < 14) ends[i].y = ends[i - 1].y + 14;
+
+  const onMove = (e) => {
+    const box = e.currentTarget.getBoundingClientRect();
+    const i = count > 1 ? Math.round(((e.clientX - box.left - M.l) / iw) * (count - 1)) : 0;
+    setHover(Math.min(count - 1, Math.max(0, i)));
+  };
+  /* At the hovered game: each person's average as of their latest game so far,
+     and their score if they played this one. */
+  const read =
+    hover === null
+      ? null
+      : drawn.map((l) => {
+          let at = null;
+          for (const p of l.pts) {
+            if (p.x > hover) break;
+            at = p;
+          }
+          return { ...l, at, here: at && at.x === hover ? at.raw : null };
+        });
+
+  return (
+    <div className="cs-chart" ref={ref}>
+      {width > 0 && (
+        <svg
+          width={width}
+          height={H}
+          onPointerMove={onMove}
+          onPointerDown={onMove}
+          onPointerLeave={() => setHover(null)}
+          role="img"
+          aria-label="Ten-game moving average for each player"
+        >
+          {ticks.map((t) => (
+            <g key={t}>
+              <line x1={M.l} x2={M.l + iw} y1={y(t)} y2={y(t)} className="cs-grid-line" />
+              <text x={M.l - 6} y={y(t) + 3} className="cs-axis" textAnchor="end">
+                {t}
+              </text>
+            </g>
+          ))}
+          {xticks.map((n) => (
+            <text key={n} x={x(n - 1)} y={H - 8} className="cs-axis" textAnchor="middle">
+              {n}
+            </text>
+          ))}
+          {drawn.map((l) =>
+            l.pts.length > 1 ? (
+              <polyline
+                key={l.key}
+                fill="none"
+                stroke={l.color}
+                strokeWidth="2"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                points={l.pts.map((p) => `${x(p.x)},${y(p.v)}`).join(" ")}
+              />
+            ) : (
+              <circle key={l.key} cx={x(l.pts[0].x)} cy={y(l.pts[0].v)} r="4" fill={l.color} />
+            )
+          )}
+          {ends.map((s) => (
+            <g key={s.key}>
+              <line
+                x1={M.l + iw + 6}
+                x2={M.l + iw + 14}
+                y1={s.y}
+                y2={s.y}
+                stroke={s.color}
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+              <text x={M.l + iw + 18} y={s.y + 4} className="cs-endlabel">
+                {s.label} <tspan className="cs-endval">{s.v.toFixed(1)}</tspan>
+              </text>
+            </g>
+          ))}
+          {read && (
+            <g pointerEvents="none">
+              <line x1={x(hover)} x2={x(hover)} y1={M.t} y2={M.t + ih} className="cs-crosshair" />
+              {read
+                .filter((l) => l.at)
+                .map((l) => (
+                  <circle
+                    key={l.key}
+                    cx={x(hover)}
+                    cy={y(l.at.v)}
+                    r="4.5"
+                    fill={l.color}
+                    stroke="#fff"
+                    strokeWidth="2"
+                  />
+                ))}
+            </g>
+          )}
+        </svg>
+      )}
+      {read && (
+        <div
+          className="cs-tip"
+          style={{ left: Math.min(Math.max(x(hover) - 80, 0), Math.max(0, width - 170)) }}
+        >
+          <div className="cs-tip-head">
+            Game {hover + 1} · {dates[hover]}
+          </div>
+          {read.map((l) => (
+            <div key={l.key} className="cs-tip-row">
+              <span className="cs-swatch" style={{ background: l.color }} />
+              <span className="cs-tip-label">{l.label}</span>
+              <span className="mono cs-tip-val">{l.at ? l.at.v.toFixed(1) : "–"}</span>
+              <span className="mono cs-tip-raw">{l.here !== null ? l.here : ""}</span>
+            </div>
+          ))}
+          <div className="cs-tip-foot">own last {TREND_WINDOW} avg · score this game</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Trends({ stats }) {
   const rows = stats.scored;
   const [who, setWho] = useState("all");
@@ -2656,6 +2841,21 @@ function Trends({ stats }) {
       ? `${REGULARS.map((r) => r.label).join(" and ")}'s`
       : `${picked[1]}'s`;
   const points = useMemo(() => trendSeries(rows, picked[0]), [rows, picked[0]]);
+
+  /* The everyone view: a line per person with a button, on one measure. */
+  const [metric, setMetric] = useState("total");
+  const people = useMemo(() => {
+    let g = 0;
+    return choices
+      .filter(([k]) => k !== "all" && k !== "both")
+      .map(([k, label]) => {
+        const reg = REGULARS.find((r) => r.key === k);
+        return { key: k, label, color: reg ? reg.color : GUEST_COLORS[g++ % GUEST_COLORS.length] };
+      });
+  }, [choices]);
+  const multi = useMemo(() => playerLines(rows, people, metric), [rows, people, metric]);
+  const isAll = picked[0] === "all";
+  const metricLabel = TREND_SERIES.find((s) => s.key === metric).label.toLowerCase();
 
   /* Distribution: one shared 5-point range across both regulars. */
   const dist = useMemo(() => {
@@ -2703,10 +2903,48 @@ function Trends({ stats }) {
             </div>
           </div>
         </div>
+        {isAll ? (
+          <>
+            <p className="cs-legend cs-legend-wide">
+              Each player's own {metricLabel} score averaged over their last {TREND_WINDOW}{" "}
+              games, on one timeline of every game played, so a line only moves when that
+              person played. The scale starts near the lowest line, not at zero. Guests show
+              once they have {TREND_MIN_GAMES} scored games. Mega C
+              excluded. Tap or hover the chart for any game.
+            </p>
+            <div className="cs-seg cs-seg-scroll cs-seg-metric">
+              {TREND_SERIES.map((s) => (
+                <button
+                  key={s.key}
+                  className={"cs-segbtn" + (metric === s.key ? " on" : "")}
+                  onClick={() => setMetric(s.key)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            <div className="cs-chart-legend">
+              {people.map((p) => (
+                <span key={p.key}>
+                  <span className="cs-swatch line" style={{ background: p.color }} />
+                  {p.label}
+                </span>
+              ))}
+            </div>
+            {multi.count ? (
+              <>
+                <PlayersChart lines={multi.lines} count={multi.count} dates={multi.dates} />
+                <p className="cs-axis-note">Game number, oldest first</p>
+              </>
+            ) : (
+              <p className="cs-legend">No scored games yet.</p>
+            )}
+          </>
+        ) : (
+        <>
         <p className="cs-legend cs-legend-wide">
           {whoText} average over the last {TREND_WINDOW} games, game by game
-          {picked[0] === "all" ? ", guests included" : ""}. With more than one of you in view,
-          every score in those games counts. Total is
+          {picked[0] === "both" ? ". With both of you in view, every score in those games counts" : ""}. Total is
           the whole sheet; wildlife and maps are its two biggest parts, so the gap between
           them and the total is majorities and pinecones. The first {TREND_WINDOW - 1}{" "}
           points average fewer games. Mega C excluded. Tap or hover the chart for any game.
@@ -2755,6 +2993,8 @@ function Trends({ stats }) {
           </>
         ) : (
           <p className="cs-legend">No scored games here yet.</p>
+        )}
+        </>
         )}
       </div>
 
@@ -3385,6 +3625,7 @@ const CSS = `
 .cs-segbtn.on { background: var(--ink); color: #fff; }
 .cs-seg-scroll { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .cs-seg-scroll .cs-segbtn { flex: none; }
+.cs-seg-metric { display: inline-flex; margin: 0 0 10px; }
 
 .cs-mega, .cs-hide { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; user-select: none; }
 .cs-mega input, .cs-hide input { width: 15px; height: 15px; accent-color: #35604A; cursor: pointer; margin: 0; }
