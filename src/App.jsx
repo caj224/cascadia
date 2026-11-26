@@ -599,6 +599,43 @@ function recordsBroken(rows, records) {
   return out;
 }
 
+/* Every game's broken records, as they stood when it was played: walks the
+   log oldest first, asks recordsBroken against the records so far, then lifts
+   them. A record set where none stood yet (the first games logged) is not
+   counted as broken. A record broken then and beaten since still shows, since
+   it was the record at the time. Keyed by game id; games with none are left
+   out. */
+function brokenByGame(games) {
+  const rows = buildRows(games);
+  const byGame = new Map();
+  rows.forEach((r) => {
+    if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
+    byGame.get(r.gameId).push(r);
+  });
+  const records = { animals: {}, habitats: {}, margin: null };
+  const lift = (f, value) => {
+    const rec = { value };
+    if (f.group) records[f.group][f.sub] = rec;
+    else records[f.key] = rec;
+  };
+  const out = new Map();
+  [...byGame.entries()].reverse().forEach(([id, rs]) => {
+    const broken = recordsBroken(rs, records);
+    if (rs[0].megaC) return;
+    [...RECORD_FIELDS, ...DETAIL_RECORD_FIELDS].forEach((f) => {
+      const v = Math.max(...rs.map((r) => f.get(r)));
+      const rec = recOf(records, f);
+      if (v > 0 && (!rec || v > rec.value)) lift(f, v);
+    });
+    const won = rs.find((r) => r.won && r.players > 1);
+    if (won && won.margin > 0 && (!records.margin || won.margin > records.margin.value))
+      records.margin = { value: won.margin };
+    const real = broken.filter((b) => b.prev !== null);
+    if (real.length) out.set(id, real);
+  });
+  return out;
+}
+
 /* The most games logged on one date, and who was there for it. A day at the
    table rather than a score, so Mega C counts. Level days go to whichever came
    first — a record is taken by beating it, not by matching it. */
@@ -2124,6 +2161,7 @@ function GamesList({ games, cov, onDelete }) {
   // Deleting a game rewrites every stat and cannot be undone, so it asks first.
   const [pendingId, setPendingId] = useState(null);
   const pending = games.find((g) => g.id === pendingId) || null;
+  const broke = useMemo(() => brokenByGame(games), [games]);
   if (!games.length)
     return (
       <p className="cs-empty">
@@ -2141,6 +2179,7 @@ function GamesList({ games, cov, onDelete }) {
         const best = s[top[0]].total;
         const first = cov.firsts.has(g.id);
         const tied = top.length > 1;
+        const recs = broke.get(g.id) || [];
         return (
           <div className="cs-game" key={g.id}>
             <button className="cs-game-head" onClick={() => setOpen(open === g.id ? null : g.id)}>
@@ -2153,6 +2192,11 @@ function GamesList({ games, cov, onDelete }) {
                 ))}
               </span>
               {first && <span className="cs-first">first time</span>}
+              {recs.length > 0 && (
+                <span className="cs-rectag" title={recs.map((b) => b.label).join(", ")}>
+                  {recs.length === 1 ? "record" : `${recs.length} records`}
+                </span>
+              )}
               {g.megaC && <span className="cs-megatag">mega C</span>}
               <span className={"cs-winner" + (tied ? " tied" : "")}>
                 {tied ? `tied ${best}` : `${displayName(winner.name)} ${best}`}
@@ -2161,6 +2205,30 @@ function GamesList({ games, cov, onDelete }) {
 
             {open === g.id && (
               <div className="cs-detail">
+                {recs.length > 0 && (
+                  <ul className="cs-recnote">
+                    {recs.map((b) => {
+                      const reg = regularFor(b.name);
+                      return (
+                        <li key={b.label}>
+                          <span className="cs-recnote-label">{b.label}</span>{" "}
+                          <strong style={reg ? { color: reg.color } : undefined}>
+                            {displayName(b.name)}
+                          </strong>{" "}
+                          <span className="mono">
+                            {b.prefix || ""}
+                            {b.value}
+                          </span>
+                          <span className="cs-recnote-was mono">
+                            {" "}
+                            (was {b.prefix || ""}
+                            {b.prev})
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
                 <div className="cs-detail-totals">
                   {g.players.map((p, i) => (
                     <div
@@ -3754,6 +3822,10 @@ const CSS = `
 .cs-date-tag { font-size: 12px; color: var(--ink-2); }
 .cs-chips { display: flex; gap: 3px; }
 .cs-chip { width: 20px; height: 20px; border-radius: 4px; color: #fff; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.cs-rectag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #7A5A12; border: 1px solid #D9C27E; background: #FBF5E2; border-radius: 20px; padding: 2px 7px; }
+.cs-recnote { list-style: none; margin: 6px 0 4px; padding: 8px 10px; background: #FBF5E2; border: 1px solid #EADBA8; border-radius: 8px; font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
+.cs-recnote-label { color: var(--ink-2); }
+.cs-recnote-was { color: var(--ink-2); font-size: 11px; }
 .cs-first { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #35604A; border: 1px solid #A9C4B4; border-radius: 20px; padding: 2px 7px; }
 .cs-winner { margin-left: auto; font-size: 13px; font-weight: 600; color: #35604A; }
 .cs-winner.tied { color: var(--ink-2); }
